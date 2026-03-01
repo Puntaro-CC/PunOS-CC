@@ -47,6 +47,7 @@ local steps = {
     {path = ".server",        label = "Removing server..."},
     {path = ".server_files",  label = "Removing server files..."},
     {path = ".server_config", label = "Removing server config..."},
+    {path = "/.punos_version", label = "Removing version history..."},
     {path = "publicChat.lua", label = "Removing chat..."},
     {path = ".chat_config",   label = "Removing chat config..."},
     {path = "/.theme",        label = "Removing theme config..."},
