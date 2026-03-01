@@ -47,10 +47,6 @@ local FILES = {
     {"os/.command",          "/os/.command"},
     {".server",              "/.server"},
     {"os/.ChatApp",          "/os/.ChatApp"},
-    {"audio/11_59_Naktigonis.dfpwm", "/audio/11_59_Naktigonis.dfpwm"},
-    {"audio/Devils_Never_Cry.dfpwm", "/audio/Devils_Never_Cry.dfpwm"},
-    {"audio/Judas_MetalRemix.dfpwm", "/audio/Judas_MetalRemix.dfpwm"},
-    {"audio/worm_switch.dfpwm", "/audio/worm_switch.dfpwm"},
 }
 
 -- ---- Intro screen -----------------------------------------------------------
@@ -165,7 +161,9 @@ for i, pair in ipairs(FILES) do
         if dir ~= "" and dir ~= "/" and not fs.exists(dir) then
             fs.makeDir(dir)
         end
-        local f = fs.open(localPath, "w")
+        -- Write binary mode for audio files, text mode for everything else
+        local mode = localPath:sub(-6) == ".dfpwm" and "wb" or "w"
+        local f = fs.open(localPath, mode)
         f.write(body)
         f.close()
     else
