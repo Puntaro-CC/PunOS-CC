@@ -95,6 +95,14 @@ local function httpGet(url)
     return body
 end
 
+local function httpGetBinary(url)
+    local ok, res = pcall(http.get, url, nil, true)
+    if not ok or not res then return nil end
+    local body = res.readAll()
+    res.close()
+    return body
+end
+
 -- Very small JSON string extractor - only needs to pull simple string values
 local function jsonStr(body, key)
     local pattern = '"' .. key .. '"%s*:%s*"([^"]*)"'
@@ -277,22 +285,19 @@ local function doUpdate()
 
         status(logY, "Downloading " .. repoPath .. "...", UI.subtext)
 
-        local body = httpGet(RAW_BASE .. repoPath)
+        local isBinary = localPath:sub(-6) == ".dfpwm"
+        local body = isBinary and httpGetBinary(RAW_BASE .. repoPath) or httpGet(RAW_BASE .. repoPath)
         if body then
-            -- Ensure directory exists
             local dir = fs.getDir(localPath)
             if dir ~= "" and not fs.exists(dir) then
                 fs.makeDir(dir)
             end
-            -- startup.lua can't overwrite itself while running;
-            -- write to a temp file and a flag so next boot applies it
             local writePath = localPath
             if localPath == "/startup.lua" then
                 writePath = "/.startup_update"
                 needsReboot = true
             end
-            local mode = localPath:sub(-6) == ".dfpwm" and "wb" or "w"
-            local f = fs.open(writePath, mode)
+            local f = fs.open(writePath, isBinary and "wb" or "w")
             f.write(body)
             f.close()
             status(logY, "[OK] " .. repoPath, UI.success)
