@@ -36,6 +36,7 @@ local programs = {
     {name = "CCDoom",        icon = ">!", desc = "3D shooter"},
     {name = "Disk Browser",  icon = "[]", desc = "Browse disk drives"},
     {name = "Settings",      icon = "* ", desc = "Themes & config"},
+    {name = "Updater",       icon = "^^ ", desc = "Check for updates"},
     {name = "Back",          icon = "<<", desc = "Return to menu"}
 }
 
@@ -180,5 +181,7 @@ elseif nOption == 11 then
 elseif nOption == 12 then
     shell.run("os/.settings")
 elseif nOption == 13 then
+    shell.run("os/.updater")
+elseif nOption == 14 then
     shell.run(".menu")
 end
