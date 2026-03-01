@@ -45,8 +45,8 @@ local FILES = {
     {"os/.upload",           "/os/.upload"},
     {"os/.updater",          "/os/.updater"},
     {"os/.command",          "/os/.command"},
-    {"os/.server",           "/.server"},
-    {"os/.secureChat",       "/os/.secureChat"},
+    {".server",              "/.server"},
+    {"os/.ChatApp",          "/os/.ChatApp"},
 }
 
 -- ---- Intro screen -----------------------------------------------------------
@@ -109,6 +109,8 @@ if not test then
     term.write("Check your internet connection and try again.")
     return
 end
+
+local remoteVersion = test:match('"version"%s*:%s*"([^"]*)"') or "unknown"
 
 term.setCursorPos(2, 5)
 term.setTextColor(colors.lime)
@@ -182,7 +184,7 @@ end
 -- ---- Write version file -----------------------------------------------------
 
 local f = fs.open("/.punos_version", "w")
-f.write("5.2")
+f.write(remoteVersion)
 f.close()
 
 -- ---- Result -----------------------------------------------------------------
