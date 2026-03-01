@@ -291,7 +291,8 @@ local function doUpdate()
                 writePath = "/.startup_update"
                 needsReboot = true
             end
-            local f = fs.open(writePath, "w")
+            local mode = localPath:sub(-6) == ".dfpwm" and "wb" or "w"
+            local f = fs.open(writePath, mode)
             f.write(body)
             f.close()
             status(logY, "[OK] " .. repoPath, UI.success)
