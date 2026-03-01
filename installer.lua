@@ -47,10 +47,10 @@ local FILES = {
     {"os/.command",          "/os/.command"},
     {".server",              "/.server"},
     {"os/.ChatApp",          "/os/.ChatApp"},
-    {"audio/11_59_Naktigonis.dfpwm", "audio/11_59_Naktigonis.dfpwm"},
-    {"audio/Devils_Never_Cry.dfpwm", "audio/Devils_Never_Cry.dfpwm"},
-    {"audio/Judas_MetalRemix.dfpwm", "audio/Judas_MetalRemix.dfpwm"},
-    {"audio/worm_switch.dfpwm", "audio/worm_switch.dfpwm"},
+    {"audio/11_59_Naktigonis.dfpwm", "/audio/11_59_Naktigonis.dfpwm"},
+    {"audio/Devils_Never_Cry.dfpwm", "/audio/Devils_Never_Cry.dfpwm"},
+    {"audio/Judas_MetalRemix.dfpwm", "/audio/Judas_MetalRemix.dfpwm"},
+    {"audio/worm_switch.dfpwm", "/audio/worm_switch.dfpwm"},
 }
 
 -- ---- Intro screen -----------------------------------------------------------
