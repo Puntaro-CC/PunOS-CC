@@ -1,10 +1,21 @@
--- PunOS v5.2 Startup
+-- PunOS Startup
 -- First boot: full logo animation + theme selection
 -- Subsequent boots: quick wake animation
 
 local w, h = term.getSize()
-local BOOT_FLAG  = "/.punos_booted"
-local THEME_FILE = "/.theme"
+local BOOT_FLAG   = "/.punos_booted"
+local THEME_FILE  = "/.theme"
+local VER_FILE    = "/.punos_version"
+
+local function readVersion()
+    if not fs.exists(VER_FILE) then return "?" end
+    local f = fs.open(VER_FILE, "r")
+    local v = f.readAll():gsub("%s+", "")
+    f.close()
+    return v
+end
+
+local VERSION = readVersion()
 
 local function loadTheme()
     if not fs.exists("/os/theme.lua") then
@@ -33,7 +44,7 @@ local function quickBoot()
         sleep(0.04)
     end
 
-    local ver = "v5.2"
+    local ver = "v" .. VERSION
     term.setCursorPos(math.floor((w - #ver) / 2), ly + 1)
     term.setTextColor(UI.subtext)
     term.write(ver)
@@ -88,7 +99,7 @@ local function firstBoot()
         sleep(0.02)
     end
 
-    local ver = "Version 5.2"
+    local ver = "Version " .. VERSION
     term.setCursorPos(math.floor((w - #ver) / 2), logoY + #logoLines + 2)
     term.setTextColor(colors.gray)
     term.write(ver)
@@ -99,7 +110,7 @@ local function firstBoot()
     term.setBackgroundColor(colors.black)
     term.clear()
 
-    local welcome = "Welcome to PunOS v5.2"
+    local welcome = "Welcome to PunOS v" .. VERSION
     local prompt  = "Choose your colour theme:"
     term.setCursorPos(math.floor((w - #welcome) / 2), 2)
     term.setTextColor(colors.orange)
