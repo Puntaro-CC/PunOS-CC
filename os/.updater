@@ -38,8 +38,8 @@ local FILES = {
     {"os/.UninstallDialog",  "/os/.UninstallDialog"},
     {"os/.upload",           "/os/.upload"},
     {"os/.command",          "/os/.command"},
-    {"os/.server",           "/.server"},
-    {"os/.secureChat",       "/os/.secureChat"},
+    {".server",              "/.server"},
+    {"os/.ChatApp",          "/os/.ChatApp"},
 }
 
 -- ---- Helpers ----------------------------------------------------------------
