@@ -18,6 +18,14 @@ local function httpGet(url)
     return body
 end
 
+local function httpGetBinary(url)
+    local ok, res = pcall(http.get, url, nil, true)  -- true = binary mode
+    if not ok or not res then return nil end
+    local body = res.readAll()
+    res.close()
+    return body
+end
+
 -- Files to download: {repo path, local path}
 local FILES = {
     {"startup.lua",          "/startup.lua"},
@@ -153,17 +161,15 @@ for i, pair in ipairs(FILES) do
     term.clearLine()
     term.write(repoPath)
 
-    local body = httpGet(RAW_BASE .. repoPath)
+    local isBinary = localPath:sub(-6) == ".dfpwm"
+    local body = isBinary and httpGetBinary(RAW_BASE .. repoPath) or httpGet(RAW_BASE .. repoPath)
 
     if body then
-        -- Ensure parent dir exists
         local dir = fs.getDir(localPath)
         if dir ~= "" and dir ~= "/" and not fs.exists(dir) then
             fs.makeDir(dir)
         end
-        -- Write binary mode for audio files, text mode for everything else
-        local mode = localPath:sub(-6) == ".dfpwm" and "wb" or "w"
-        local f = fs.open(localPath, mode)
+        local f = fs.open(localPath, isBinary and "wb" or "w")
         f.write(body)
         f.close()
     else
