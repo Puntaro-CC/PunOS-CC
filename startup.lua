@@ -110,9 +110,9 @@ local function firstBoot()
 
     local themes = {
         {key="classic",  name="Classic",  primary=colors.orange,  border=colors.gray},
-        {key="popos",    name="Pop_OS",   primary=colors.purple,  border=colors.blue},
-        {key="hacker",   name="Hacker",   primary=colors.lime,    border=colors.green},
-        {key="ocean",    name="Ocean",    primary=colors.cyan,    border=colors.blue},
+        {key="popos",    name="Pop_OS",   primary=colors.purple,  border=colors.gray},
+        {key="hacker",   name="Hacker",   primary=colors.lime,    border=colors.gray},
+        {key="ocean",    name="Ocean",    primary=colors.cyan,    border=colors.gray},
         {key="midnight", name="Midnight", primary=colors.blue,    border=colors.gray},
     }
 
