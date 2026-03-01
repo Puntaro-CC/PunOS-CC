@@ -169,11 +169,20 @@ for i, pair in ipairs(FILES) do
         if dir ~= "" and dir ~= "/" and not fs.exists(dir) then
             fs.makeDir(dir)
         end
-        local f = fs.open(localPath, isBinary and "wb" or "w")
-        f.write(body)
-        f.close()
+        local mode = isBinary and "wb" or "w"
+        local f = fs.open(localPath, mode)
+        if f then
+            f.write(body)
+            f.close()
+            -- Verify it actually landed
+            if not fs.exists(localPath) then
+                table.insert(failed, repoPath .. " (write failed)")
+            end
+        else
+            table.insert(failed, repoPath .. " (open failed, mode=" .. mode .. ")")
+        end
     else
-        table.insert(failed, repoPath)
+        table.insert(failed, repoPath .. " (download failed)")
     end
 
     -- Progress bar
@@ -225,9 +234,18 @@ else
     term.write("Done with " .. #failed .. " error(s):")
 
     for i, name in ipairs(failed) do
-        term.setCursorPos(4, logY + i)
-        term.setTextColor(colors.red)
-        term.write("- " .. name)
+        local y = logY + i
+        if y < h - 2 then
+            term.setCursorPos(4, y)
+            term.setTextColor(colors.red)
+            term.write("- " .. name)
+        end
+    end
+
+    if #failed > h - logY - 3 then
+        term.setCursorPos(2, h - 2)
+        term.setTextColor(colors.yellow)
+        term.write("(and " .. (#failed - (h - logY - 3)) .. " more...)")
     end
 
     term.setCursorPos(2, logY + #failed + 2)
