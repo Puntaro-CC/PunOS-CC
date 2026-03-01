@@ -1,0 +1,96 @@
+-- PunOS Paint Launcher
+os.pullEvent = os.pullEventRaw
+local UI = dofile("/os/loadTheme.lua")
+
+local w, h = term.getSize()
+
+local function drawHeader()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1)
+    term.setTextColor(UI.primary)
+    term.write("PunOS")
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.subtext)
+    term.write("Paint")
+    local info = "ID:" .. os.getComputerID()
+    term.setCursorPos(w - #info - 1, 2)
+    term.write(info)
+end
+
+local options = {
+    {name = "New Image",   icon = "+ ", desc = "Create a new paint file"},
+    {name = "View Image",  icon = "[]", desc = "View a saved image"},
+    {name = "Back",        icon = "<< ", desc = "Return to programs"},
+}
+
+local nOption = 1
+local boxWidth = 22
+local boxHeight = 3
+local buttonRegions = {}
+
+local function drawMenu()
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    drawHeader()
+
+    local cx = math.floor(w / 2)
+    term.setCursorPos(math.floor((w - 5) / 2), 4)
+    term.setTextColor(UI.primary)
+    term.write("Paint")
+
+    local startY = 6
+    buttonRegions = {}
+
+    for i, option in ipairs(options) do
+        local y = startY + (i - 1) * (boxHeight + 1)
+        local x = math.floor((w - boxWidth) / 2)
+        buttonRegions[i] = {x1 = x, y1 = y, x2 = x + boxWidth - 1, y2 = y + boxHeight - 1}
+
+        if i == nOption then
+            paintutils.drawFilledBox(x, y, x + boxWidth - 1, y + boxHeight - 1, UI.primary)
+            term.setTextColor(UI.background)
+        else
+            paintutils.drawFilledBox(x, y, x + boxWidth - 1, y + boxHeight - 1, UI.border)
+            term.setTextColor(UI.text)
+        end
+
+        term.setCursorPos(x + 1, y + 1)
+        term.write(option.icon .. " " .. option.name)
+        term.setTextColor(i == nOption and UI.background or UI.subtext)
+        term.setCursorPos(x + 1, y + 2)
+        term.write(option.desc)
+    end
+
+    term.setCursorPos(2, h)
+    term.setTextColor(UI.subtext)
+    term.write("W/S or Click: Select | Enter: Confirm")
+end
+
+drawMenu()
+
+while true do
+    local e, p, p2, p3 = os.pullEvent()
+    if e == "key" then
+        if p == keys.w or p == keys.up then
+            if nOption > 1 then nOption = nOption - 1; drawMenu() end
+        elseif p == keys.s or p == keys.down then
+            if nOption < #options then nOption = nOption + 1; drawMenu() end
+        elseif p == keys.enter then break end
+    elseif e == "mouse_click" then
+        local mx, my = p2, p3
+        for i, r in ipairs(buttonRegions) do
+            if mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2 then
+                nOption = i; drawMenu(); sleep(0.08); break
+            end
+        end
+        break
+    end
+end
+
+term.setBackgroundColor(colors.black)
+term.clear()
+
+if     nOption == 1 then shell.run("os/.paintOpen")
+elseif nOption == 2 then shell.run("os/.paintViewer")
+else                     shell.run("os/.programs")
+end

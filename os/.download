@@ -1,0 +1,225 @@
+-- PunOS File Download Client v5.2
+-- Downloads .nfp (paint) or .dfpwm (audio) files from the file share server
+
+local PROTOCOL = "nfp_share"
+
+local UI = dofile("/os/loadTheme.lua")
+
+local TYPE_INFO = {
+    paint = {ext = ".nfp",    dir = "/paint", label = "Paint image"},
+    audio = {ext = ".dfpwm", dir = "/audio",  label = "Audio file"}
+}
+
+local modem = peripheral.find("modem") or error("No modem found!")
+rednet.open(peripheral.getName(modem))
+
+local w, h = term.getSize()
+
+-- Header
+term.clear()
+term.setTextColor(UI.primary)
+local title = "FILE DOWNLOAD"
+term.setCursorPos(math.floor((w - #title) / 2), 2)
+print(title)
+term.setCursorPos(1, 3)
+print(string.rep("=", w))
+term.setTextColor(colors.white)
+print("")
+
+-- ---- Step 1: File type ----
+term.setTextColor(UI.secondary)
+print("What type of file are you downloading?")
+term.setTextColor(colors.white)
+print("  [1] Paint image  (.nfp)    saves to /paint/")
+print("  [2] Audio file   (.dfpwm)  saves to /audio/")
+print("")
+term.setTextColor(UI.secondary)
+print("Enter 1 or 2:")
+term.setTextColor(colors.white)
+
+local typeChoice = read()
+local fileType, info
+
+if typeChoice == "1" then
+    fileType = "paint"
+elseif typeChoice == "2" then
+    fileType = "audio"
+else
+    term.setTextColor(UI.error)
+    print("Invalid choice.")
+    term.setTextColor(colors.white)
+    sleep(2)
+    shell.run("os/.fileShare")
+    return
+end
+
+info = TYPE_INFO[fileType]
+print("")
+term.setTextColor(UI.secondary)
+print("Selected: " .. info.label .. " (" .. info.ext .. ")")
+term.setTextColor(colors.white)
+print("")
+
+-- ---- Step 2: Server ID ----
+term.setTextColor(UI.subtext)
+print("Your computer ID: " .. os.getComputerID())
+term.setTextColor(UI.secondary)
+print("Enter server ID (text or number):")
+term.setTextColor(colors.white)
+local serverID = read()
+
+if serverID == "" then
+    term.setTextColor(UI.error)
+    print("Invalid server ID.")
+    term.setTextColor(colors.white)
+    sleep(2)
+    shell.run("os/.fileShare")
+    return
+end
+
+term.setTextColor(UI.secondary)
+print("Looking up server...")
+term.setTextColor(colors.white)
+local foundID = rednet.lookup(PROTOCOL, serverID)
+
+if not foundID then
+    term.setTextColor(UI.error)
+    print("Warning: '" .. serverID .. "' not found on network.")
+    term.setTextColor(UI.secondary)
+    print("Continue anyway? (y/n):")
+    term.setTextColor(colors.white)
+    local ans = read()
+    if ans ~= "y" then
+        textutils.slowPrint("Returning to File Share...")
+        sleep(1)
+        shell.run("os/.fileShare")
+        return
+    end
+    foundID = rednet.lookup(PROTOCOL)
+    if not foundID then
+        term.setTextColor(UI.error)
+        print("No servers found on network.")
+        term.setTextColor(colors.white)
+        sleep(2)
+        shell.run("os/.fileShare")
+        return
+    end
+else
+    term.setTextColor(UI.success)
+    print("Server found!")
+    term.setTextColor(colors.white)
+    sleep(0.5)
+end
+
+print("")
+
+-- ---- Step 3: Fetch & display type-filtered file list ----
+term.setTextColor(UI.secondary)
+print("Fetching " .. info.label .. " files from server...")
+term.setTextColor(colors.white)
+
+rednet.send(foundID, {action = "list", fileType = fileType}, PROTOCOL)
+local id, response = rednet.receive(PROTOCOL, 5)
+
+print("")
+if id == foundID and response and response.success then
+    term.setTextColor(UI.secondary)
+    print("Available " .. info.label .. " files on server:")
+    term.setTextColor(colors.white)
+
+    if #response.files == 0 then
+        term.setTextColor(colors.gray)
+        print("  (none available to you)")
+        term.setTextColor(colors.white)
+    else
+        for _, fileInfo in ipairs(response.files) do
+            if fileInfo.public then
+                term.setTextColor(UI.success)
+                print("  [PUBLIC]  " .. fileInfo.name)
+            else
+                term.setTextColor(UI.secondary)
+                print("  [PRIVATE] " .. fileInfo.name)
+            end
+        end
+        term.setTextColor(colors.white)
+    end
+else
+    term.setTextColor(UI.error)
+    print("Could not retrieve file list from server.")
+    term.setTextColor(colors.white)
+end
+
+print("")
+
+-- ---- Step 4: Filename to download ----
+term.setTextColor(UI.secondary)
+print("Enter filename to download (must end in " .. info.ext .. "):")
+term.setTextColor(colors.white)
+local filename = read()
+
+-- Safety check: extension must match chosen type
+if filename:sub(-#info.ext) ~= info.ext then
+    term.setTextColor(UI.error)
+    print("Error: filename must end in '" .. info.ext .. "' for the " .. info.label .. " store.")
+    print("Download cancelled.")
+    term.setTextColor(colors.white)
+    sleep(3)
+    shell.run("os/.fileShare")
+    return
+end
+
+-- Ensure local save directory exists
+if not fs.exists(info.dir) then
+    fs.makeDir(info.dir)
+end
+
+local filepath = info.dir .. "/" .. filename
+
+-- ---- Step 5: Request download ----
+term.setTextColor(UI.secondary)
+print("Requesting " .. filename .. "...")
+term.setTextColor(colors.white)
+
+rednet.send(foundID, {
+    action   = "download",
+    fileType = fileType,
+    filename = filename
+}, PROTOCOL)
+
+local dlID, dlResponse = rednet.receive(PROTOCOL, 5)
+
+if dlID == foundID and dlResponse and dlResponse.success then
+    local file = fs.open(filepath, "w")
+    file.write(dlResponse.data)
+    file.close()
+
+    term.setTextColor(UI.success)
+    print("Success! Saved to: " .. filepath)
+    term.setTextColor(colors.white)
+
+    -- Offer to open in Audio Player immediately
+    if fileType == "audio" then
+        print("")
+        term.setTextColor(UI.secondary)
+        print("Open in Audio Player now? (y/n):")
+        term.setTextColor(colors.white)
+        if read() == "y" then
+            rednet.close()
+            shell.run("os/.audioPlayer")
+            return
+        end
+    end
+else
+    local errorMsg = dlResponse and dlResponse.message or "No response"
+    term.setTextColor(UI.error)
+    if errorMsg == "Access denied" then
+        print("Download failed: This file is not addressed to you.")
+    else
+        print("Download failed: " .. errorMsg)
+    end
+    term.setTextColor(colors.white)
+end
+
+sleep(3)
+rednet.close()
+shell.run("os/.fileShare")

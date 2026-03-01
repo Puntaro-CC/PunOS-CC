@@ -1,0 +1,133 @@
+-- PunOS CCDoom Launcher
+-- First-run: installs CCDoom via pastebin, then launches it
+
+os.pullEvent = os.pullEventRaw
+
+local w, h = term.getSize()
+
+local UI = dofile("/os/loadTheme.lua")
+
+local DOOM_FILE   = "/Doom.lua"
+local PASTEBIN_ID = "xLC8mABU"
+
+local function drawHeader()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1)
+    term.setTextColor(UI.primary)
+    term.write("PunOS")
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.subtext)
+    term.write("CCDoom Launcher")
+end
+
+local function centeredText(y, text, color)
+    term.setCursorPos(math.floor((w - #text) / 2), y)
+    term.setTextColor(color or UI.text)
+    term.write(text)
+end
+
+local function exitToDoom()
+    term.setBackgroundColor(colors.black)
+    term.clear()
+    term.setCursorPos(1, 1)
+    shell.run(DOOM_FILE)
+    -- When Doom exits, return to programs
+    shell.run("os/.programs")
+end
+
+-- ---- Check if already installed ----
+if fs.exists(DOOM_FILE) then
+    exitToDoom()
+    return
+end
+
+-- ---- First-time install screen ----
+term.setBackgroundColor(UI.background)
+term.clear()
+drawHeader()
+
+centeredText(4,  "CCDoom",                       UI.primary)
+centeredText(5,  "A Doom-inspired shooter",      UI.subtext)
+centeredText(6,  "by Xella  |  MIT License",     UI.subtext)
+centeredText(8,  "Controls:",                    UI.text)
+centeredText(9,  "WASD - Move",                  UI.subtext)
+centeredText(10, "Arrow keys - Camera",          UI.subtext)
+centeredText(11, "Space - Shoot",                UI.subtext)
+centeredText(12, "L.Ctrl - Reset",               UI.subtext)
+
+centeredText(14, "Not installed yet.",           colors.yellow)
+centeredText(15, "Requires HTTP access.",        UI.subtext)
+
+-- Buttons
+local installR = {x1 = math.floor(w/2) - 9, y1 = 17, x2 = math.floor(w/2) + 9, y2 = 17}
+local backR    = {x1 = math.floor(w/2) - 5, y1 = 19, x2 = math.floor(w/2) + 5, y2 = 19}
+
+local function drawButtons(hovInst, hovBack)
+    paintutils.drawFilledBox(installR.x1, installR.y1, installR.x2, installR.y2,
+        hovInst and UI.primary or UI.border)
+    term.setCursorPos(installR.x1 + 1, installR.y1)
+    term.setTextColor(hovInst and UI.background or UI.text)
+    term.write("  Install & Play  ")
+
+    paintutils.drawFilledBox(backR.x1, backR.y1, backR.x2, backR.y2,
+        hovBack and UI.primary or UI.border)
+    term.setCursorPos(backR.x1 + 1, backR.y1)
+    term.setTextColor(hovBack and UI.background or UI.text)
+    term.write("    Back    ")
+end
+
+drawButtons(false, false)
+
+term.setCursorPos(2, h)
+term.setTextColor(UI.subtext)
+term.write("Click Install to download CCDoom now")
+
+local function inR(r, mx, my)
+    return mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2
+end
+
+while true do
+    local e, p1, p2, p3 = os.pullEvent()
+
+    if e == "mouse_click" then
+        local mx, my = p2, p3
+        if inR(installR, mx, my) then
+            -- Run install
+            term.setBackgroundColor(UI.background)
+            term.clear()
+            drawHeader()
+            centeredText(5, "Downloading CCDoom...", UI.primary)
+            centeredText(6, "This may take a moment.", UI.subtext)
+
+            pcall(function()
+                shell.run("pastebin", "run", PASTEBIN_ID)
+            end)
+
+            if not fs.exists(DOOM_FILE) then
+                term.setBackgroundColor(UI.background)
+                term.clear()
+                drawHeader()
+                centeredText(5, "Installation failed.", colors.red)
+                centeredText(6, tostring(err or "Unknown error"), UI.subtext)
+                centeredText(7, "Check HTTP is enabled in CC config.", UI.subtext)
+                centeredText(9, "Press any key to return.", UI.subtext)
+                os.pullEvent("key")
+                shell.run("os/.programs")
+                return
+            end
+
+            exitToDoom()
+            return
+
+        elseif inR(backR, mx, my) then
+            shell.run("os/.programs")
+            return
+        end
+
+    elseif e == "key" then
+        if p1 == keys.backspace then
+            shell.run("os/.programs")
+            return
+        end
+    end
+end

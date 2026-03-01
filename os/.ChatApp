@@ -1,0 +1,477 @@
+-- ChatApp with persistent server configuration and styled UI with scrollable history
+local CONFIG_FILE = "/.chat_config"
+
+-- UI Colors (inspired by .menu with secret chat theme)
+local UI = {
+    primary = colors.cyan,
+    secondary = colors.blue,
+    background = colors.black,
+    selected = colors.lightBlue,
+    text = colors.white,
+    subtext = colors.lightGray,
+    border = colors.gray,
+    server = colors.lime,
+    client = colors.orange,
+    msgSent = colors.lightBlue,
+    msgReceived = colors.lightGray,
+    system = colors.yellow
+}
+
+local w, h = term.getSize()
+
+-- Message history buffer
+local messageHistory = {}
+local scrollOffset = 0
+local maxVisibleLines = h - 5  -- Reserve space for header, input, footer
+
+-- Draw a nice box with borders
+function drawBox(x, y, width, height, color)
+    paintutils.drawBox(x, y, x + width - 1, y + height - 1, color)
+end
+
+-- Print centered text
+function printCentered(y, s, color)
+    color = color or UI.text
+    local x = math.floor((w - string.len(s)) / 2)
+    term.setCursorPos(x, y)
+    term.setTextColor(color)
+    term.write(s)
+end
+
+-- Draw header
+local function drawHeader(username, channel, isServer)
+    paintutils.drawFilledBox(1, 1, w, 3, UI.border)
+    
+    -- Title
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.primary)
+    term.write("SecureChat")
+    
+    -- Server/Client indicator
+    term.setCursorPos(w - 8, 2)
+    if isServer then
+        term.setTextColor(UI.server)
+        term.write("[SERVER]")
+    else
+        term.setTextColor(UI.client)
+        term.write("[CLIENT]")
+    end
+    
+    -- User and channel info
+    term.setCursorPos(2, 3)
+    term.setTextColor(UI.subtext)
+    term.write("User: " .. username .. " | #" .. channel)
+    
+    -- Computer ID
+    local info = "ID:" .. os.getComputerID()
+    term.setCursorPos(w - #info - 1, 3)
+    term.write(info)
+end
+
+-- Draw footer
+local function drawFooter()
+    term.setCursorPos(1, h)
+    term.setBackgroundColor(UI.border)
+    term.clearLine()
+    term.setCursorPos(2, h)
+    term.setTextColor(UI.subtext)
+    term.write("Scroll: Mouse | Type exit[] to leave")
+end
+
+-- Draw input line
+local function drawInputLine()
+    term.setCursorPos(1, h - 1)
+    term.setBackgroundColor(UI.border)
+    term.clearLine()
+end
+
+-- Redraw the entire chat display
+local function redrawChat()
+    term.setBackgroundColor(UI.background)
+    
+    -- Clear chat area
+    for y = 4, h - 2 do
+        term.setCursorPos(1, y)
+        term.clearLine()
+    end
+    
+    -- Calculate which messages to show
+    local totalMessages = #messageHistory
+    local startIdx = math.max(1, totalMessages - maxVisibleLines - scrollOffset + 1)
+    local endIdx = math.max(1, totalMessages - scrollOffset)
+    
+    -- Draw messages
+    local y = 4
+    for i = startIdx, endIdx do
+        if y >= h - 1 then break end
+        
+        local msg = messageHistory[i]
+        term.setCursorPos(2, y)
+        
+        if msg.isSystem then
+            term.setTextColor(UI.system)
+        else
+            term.setTextColor(UI.msgReceived)
+        end
+        
+        term.write(msg.text)
+        y = y + 1
+    end
+    
+    -- Show scroll indicator if not at bottom
+    if scrollOffset > 0 then
+        term.setCursorPos(w - 10, h - 1)
+        term.setBackgroundColor(UI.border)
+        term.setTextColor(UI.system)
+        term.write("[" .. scrollOffset .. " up]")
+    end
+end
+
+-- Emoji replacements using simple text patterns
+local function parseEmojis(text)
+    local emojis = {
+        [":)"] = "\001",    -- Smiley face
+        [":("] = "\002",    -- Sad face
+        [":D"] = "\003",    -- Big smile
+        [":P"] = "\004",    -- Tongue out
+        [";)"] = "\005",    -- Wink
+        ["<3"] = "\003",    -- Heart
+        [":o"] = "\015",    -- Surprised
+        [":|"] = "\124",    -- Neutral
+        [":*"] = "\006",    -- Kiss
+        ["^_^"] = "\001",   -- Happy
+        [">:("] = "\002",   -- Angry
+        ["XD"] = "\003",    -- Laughing
+        [":3"] = "\004",    -- Cat face
+        ["o7"] = "\157",    -- Salute
+        ["\\o/"] = "\021",  -- Celebration
+        ["<o>"] = "\007",   -- Bell/alert
+        ["->"] = "\016",    -- Arrow right
+        ["<-"] = "\017",    -- Arrow left
+        ["*"] = "\007",     -- Star/sparkle
+    }
+    
+    local result = text
+    for pattern, emoji in pairs(emojis) do
+        -- Escape special pattern characters
+        local escaped = pattern:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
+        result = result:gsub(escaped, emoji)
+    end
+    
+    return result
+end
+
+-- Add message to history and redraw
+local function addMessage(text, isSystem)
+    -- Parse emojis if not a system message
+    if not isSystem then
+        text = parseEmojis(text)
+    end
+    
+    -- Word wrap long messages
+    local maxWidth = w - 3  -- Leave margin
+    if #text > maxWidth then
+        -- Split into multiple lines
+        local remaining = text
+        while #remaining > 0 do
+            if #remaining <= maxWidth then
+                table.insert(messageHistory, {text = remaining, isSystem = isSystem or false})
+                break
+            else
+                -- Find last space before maxWidth
+                local cutPoint = maxWidth
+                local lastSpace = remaining:sub(1, maxWidth):match("^.*()%s")
+                if lastSpace and lastSpace > maxWidth / 2 then
+                    cutPoint = lastSpace
+                end
+                
+                local line = remaining:sub(1, cutPoint)
+                table.insert(messageHistory, {text = line, isSystem = isSystem or false})
+                remaining = remaining:sub(cutPoint + 1)
+            end
+        end
+    else
+        table.insert(messageHistory, {text = text, isSystem = isSystem or false})
+    end
+    
+    -- Auto-scroll to bottom when new message arrives (unless user is scrolling)
+    if scrollOffset == 0 then
+        redrawChat()
+        drawInputLine()
+        drawFooter()
+    end
+end
+
+-- Check if this is a configured chat server
+local function loadConfig()
+    if fs.exists(CONFIG_FILE) then
+        local file = fs.open(CONFIG_FILE, "r")
+        local config = textutils.unserialize(file.readAll())
+        file.close()
+        return config
+    end
+    return nil
+end
+
+-- Save server configuration
+local function saveConfig(username, channel)
+    local config = {
+        username = username,
+        channel = channel,
+        isServer = true
+    }
+    local file = fs.open(CONFIG_FILE, "w")
+    file.write(textutils.serialize(config))
+    file.close()
+    
+    -- Create startup file
+    local startup = fs.open("/startup.lua", "w")
+    startup.write('shell.run("os/.ChatApp")')
+    startup.close()
+end
+
+-- Initial setup UI
+local function setupUI()
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    
+    paintutils.drawFilledBox(1, 1, w, 3, UI.border)
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.primary)
+    term.write("SecureChat - Setup")
+    
+    term.setBackgroundColor(UI.background)
+    term.setTextColor(UI.text)
+    
+    term.setCursorPos(2, 5)
+    term.write("Username: ")
+    local username = read()
+    
+    term.setCursorPos(2, 7)
+    term.write("Channel: ")
+    local channel = read()
+    
+    term.setCursorPos(2, 9)
+    term.write("Run as Server? (y/n): ")
+    local isServer = read():lower() == "y"
+    
+    if isServer then
+        term.setCursorPos(2, 11)
+        term.setTextColor(UI.server)
+        term.write("[SERVER MODE]")
+        term.setCursorPos(2, 12)
+        term.setTextColor(UI.system)
+        term.write("Auto-start configured!")
+        term.setTextColor(UI.text)
+        sleep(1.5)
+    else
+        term.setCursorPos(2, 11)
+        term.setTextColor(UI.client)
+        term.write("[CLIENT MODE]")
+        term.setTextColor(UI.text)
+        sleep(1)
+    end
+    
+    return username, channel, isServer
+end
+
+-- Load existing config or prompt for new setup
+local config = loadConfig()
+local username, channel, isServer
+
+if config then
+    username = config.username
+    channel = config.channel
+    isServer = true
+else
+    username, channel, isServer = setupUI()
+    
+    if isServer then
+        saveConfig(username, channel)
+    end
+end
+
+-- Initialize display
+term.setBackgroundColor(UI.background)
+term.clear()
+drawHeader(username, channel, isServer)
+drawInputLine()
+drawFooter()
+
+-- Open any modems on the computer
+peripheral.find("modem", rednet.open)
+message = ""
+
+-- History file location
+local historyFile = "chat_history_" .. channel .. ".txt"
+local HISTORY_REQUEST = "HISTORY_REQ_" .. channel
+local HISTORY_RESPONSE = "HISTORY_RESP_" .. channel
+
+-- Load chat history from file
+local function loadHistory()
+    if fs.exists(historyFile) then
+        local file = fs.open(historyFile, "r")
+        local content = file.readAll()
+        file.close()
+        return content
+    end
+    return ""
+end
+
+-- Save message to history (server only)
+local function saveToHistory(msg)
+    local file = fs.open(historyFile, "a")
+    file.writeLine(msg)
+    file.close()
+end
+
+-- Load history into message buffer
+local function displayHistory(history)
+    if history and history ~= "" then
+        addMessage("--- Previous Messages ---", true)
+        
+        for line in history:gmatch("[^\n]+") do
+            addMessage(line, false)
+        end
+        
+        addMessage("--- End of History ---", true)
+    end
+end
+
+-- Handle scroll input
+local function handleScroll()
+    while true do
+        local event, direction, x, y = os.pullEvent("mouse_scroll")
+        
+        if direction == 1 then
+            -- Scroll down (towards bottom/recent messages)
+            if scrollOffset > 0 then
+                scrollOffset = scrollOffset - 1
+                redrawChat()
+                drawInputLine()
+                drawFooter()
+            end
+        elseif direction == -1 then
+            -- Scroll up (towards top/older messages)
+            local maxScroll = math.max(0, #messageHistory - maxVisibleLines)
+            if scrollOffset < maxScroll then
+                scrollOffset = scrollOffset + 1
+                redrawChat()
+                drawInputLine()
+                drawFooter()
+            end
+        end
+    end
+end
+
+-- SERVER MODE
+if isServer then
+    addMessage("[Server initialized for #" .. channel .. "]", true)
+    
+    -- Display existing history
+    displayHistory(loadHistory())
+    
+    -- Server receives messages and responds to history requests
+    function receiveChat()
+        while true do
+            local sender, msg, protocol = rednet.receive()
+            
+            -- Handle history requests
+            if protocol == HISTORY_REQUEST then
+                addMessage("[History request from #" .. sender .. "]", true)
+                
+                local history = loadHistory()
+                rednet.send(sender, history, HISTORY_RESPONSE)
+                
+                addMessage("[History sent to #" .. sender .. "]", true)
+            
+            -- Handle regular chat messages
+            elseif protocol == channel then
+                addMessage(msg, false)
+                saveToHistory(msg)
+            end
+        end
+    end
+    
+    function sendMsg()
+        while true do
+            term.setCursorPos(2, h - 1)
+            term.setBackgroundColor(UI.border)
+            term.clearLine()
+            term.setTextColor(UI.primary)
+            term.write(">: ")
+            term.setTextColor(UI.text)
+            message = read()
+            
+            if message == "exit[]" then
+                os.reboot()
+            end
+            
+            -- Reset scroll to bottom when sending
+            scrollOffset = 0
+            
+            local fullMsg = username.." (#"..os.getComputerID().."): '"..message.."'"
+            addMessage(fullMsg, false)  -- Add to local history buffer
+            rednet.broadcast(fullMsg, channel)
+            saveToHistory(fullMsg)
+        end
+    end
+
+-- CLIENT MODE
+else
+    addMessage("[Connecting to #" .. channel .. "...]", true)
+    addMessage("[Requesting chat history...]", true)
+    
+    -- Request history from server
+    rednet.broadcast(os.getComputerID(), HISTORY_REQUEST)
+    
+    -- Wait for history response (with timeout)
+    local sender, msg, protocol = rednet.receive(HISTORY_RESPONSE, 5)
+    
+    -- Clear connection messages
+    messageHistory = {}
+    
+    if protocol == HISTORY_RESPONSE then
+        addMessage("[History received from server #" .. sender .. "]", true)
+        displayHistory(msg)
+    else
+        addMessage("[No server response - starting fresh chat]", true)
+    end
+    
+    -- Regular client functions
+    function receiveChat()
+        while true do
+            local sender, msg, protocol = rednet.receive()
+            -- Only display regular chat messages
+            if protocol == channel then
+                addMessage(msg, false)
+            end
+        end
+    end
+    
+    function sendMsg()
+        while true do
+            term.setCursorPos(2, h - 1)
+            term.setBackgroundColor(UI.border)
+            term.clearLine()
+            term.setTextColor(UI.primary)
+            term.write(">: ")
+            term.setTextColor(UI.text)
+            message = read()
+            
+            if message == "exit[]" then
+                shell.run("/os/.programs")
+            end
+            
+            -- Reset scroll to bottom when sending
+            scrollOffset = 0
+            
+            local fullMsg = username.." (#"..os.getComputerID().."): '"..message.."'"
+            addMessage(fullMsg, false)  -- Add to local history buffer
+            rednet.broadcast(fullMsg, channel)
+        end
+    end
+end
+
+-- Runs the functions in parallel
+parallel.waitForAny(receiveChat, sendMsg, handleScroll)

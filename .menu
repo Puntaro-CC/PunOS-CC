@@ -1,0 +1,118 @@
+os.pullEvent = os.pullEventRaw
+local UI = dofile("/os/loadTheme.lua")
+
+local w, h = term.getSize()
+
+local function drawBox(x, y, width, height, color)
+    paintutils.drawBox(x, y, x + width - 1, y + height - 1, color)
+end
+
+local function printCentered(y, s, color)
+    local x = math.floor((w - string.len(s)) / 2)
+    term.setCursorPos(x, y)
+    term.setTextColor(color or UI.text)
+    term.write(s)
+end
+
+local function drawHeader()
+    paintutils.drawFilledBox(1, 1, w, 3, UI.border)
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.primary)
+    term.write("PunOS")
+    local info = "ID:" .. os.getComputerID()
+    term.setCursorPos(w - #info - 1, 2)
+    term.setTextColor(UI.subtext)
+    term.write(info)
+    local time = textutils.formatTime(os.time(), false)
+    local day  = "Day " .. os.day()
+    term.setCursorPos(2, 3)
+    term.setTextColor(UI.subtext)
+    term.write(day .. " | " .. time)
+end
+
+local menuOptions = {
+    {name = "Command",   icon = ">_"},
+    {name = "Programs",  icon = "[]"},
+    {name = "Settings",  icon = "* "},
+    {name = "Shut Down", icon = "X "},
+    {name = "Uninstall", icon = "! "},
+}
+
+local nOption = 1
+local boxWidth = 20
+local boxHeight = 2
+local buttonRegions = {}
+
+local function drawMenu()
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    drawHeader()
+    printCentered(5, "MAIN MENU", UI.primary)
+
+    local totalHeight = (#menuOptions * boxHeight) + ((#menuOptions - 1) * 1)
+    local startY = math.floor((h - totalHeight - 7) / 2) + 6
+    if startY + totalHeight > h - 2 then startY = 7 end
+
+    buttonRegions = {}
+
+    for i, option in ipairs(menuOptions) do
+        local y = startY + (i - 1) * (boxHeight + 1)
+        local x = math.floor((w - boxWidth) / 2)
+
+        buttonRegions[i] = {x1 = x, y1 = y, x2 = x + boxWidth - 1, y2 = y + boxHeight - 1}
+
+        if i == nOption then
+            paintutils.drawFilledBox(x, y, x + boxWidth - 1, y + boxHeight - 1, UI.primary)
+            term.setTextColor(UI.background)
+        else
+            drawBox(x, y, boxWidth, boxHeight, UI.border)
+            term.setTextColor(UI.text)
+        end
+
+        local text = option.icon .. " " .. option.name
+        term.setCursorPos(x + math.floor((boxWidth - #text) / 2), y + math.floor(boxHeight / 2))
+        term.write(text)
+    end
+
+    term.setCursorPos(2, h)
+    term.setTextColor(UI.subtext)
+    term.write("W/S or Click: Select | Enter: Confirm")
+end
+
+local timerID = os.startTimer(1)
+drawMenu()
+
+while true do
+    local e, p, p2, p3 = os.pullEvent()
+
+    if e == "key" then
+        if p == keys.w or p == keys.up then
+            if nOption > 1 then nOption = nOption - 1; drawMenu() end
+        elseif p == keys.s or p == keys.down then
+            if nOption < #menuOptions then nOption = nOption + 1; drawMenu() end
+        elseif p == keys.enter then break end
+
+    elseif e == "mouse_click" then
+        local mx, my = p2, p3
+        for i, r in ipairs(buttonRegions) do
+            if mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2 then
+                nOption = i; drawMenu(); sleep(0.08); break
+            end
+        end
+        break
+
+    elseif e == "timer" and p == timerID then
+        drawHeader()
+        timerID = os.startTimer(1)
+    end
+end
+
+term.setBackgroundColor(colors.black)
+term.clear()
+
+if     nOption == 1 then shell.run("os/.command")
+elseif nOption == 2 then shell.run("os/.programs")
+elseif nOption == 3 then shell.run("os/.settings")
+elseif nOption == 4 then os.shutdown()
+else                     shell.run("os/.UninstallDialog")
+end

@@ -1,0 +1,14 @@
+term.clear()
+term.setCursorPos(1,1)
+print("Enter the filename:")
+local name = read()
+textutils.slowPrint("Fetching...")
+sleep(1)
+local image = paintutils.loadImage("/paint/"..name..".nfp")
+print("Found "..name..".nfp")
+sleep(2)
+
+term.clear()
+paintutils.drawImage(image, term.getCursorPos())
+
+term.setCursorPos(1,1)

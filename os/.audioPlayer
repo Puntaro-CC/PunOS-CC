@@ -1,0 +1,562 @@
+-- PunOS Audio Player
+-- Plays local .dfpwm audio files from /audio/
+
+os.pullEvent = os.pullEventRaw
+
+local args = { ... }
+local w, h = term.getSize()
+
+local UI = dofile("/os/loadTheme.lua")
+
+local AUDIO_DIR = "/audio"
+
+-- DFPWM runs at 48000 samples/sec, 8 samples per byte  6000 bytes/sec
+local BYTES_PER_SEC = 6000
+
+-- Require speaker
+local speaker = peripheral.find("speaker")
+if not speaker then
+    term.setBackgroundColor(colors.black)
+    term.clear()
+    term.setCursorPos(1, 1)
+    term.setTextColor(colors.red)
+    print("Audio Player requires a speaker peripheral.")
+    print("Attach a speaker and try again.")
+    sleep(3)
+    shell.run("os/.programs")
+    return
+end
+
+local speakerName = peripheral.getName(speaker)
+local decoder = require("cc.audio.dfpwm").make_decoder()
+
+-- ---- Layout constants ----
+local LIST_TITLE_ROW = 3
+local LIST_START_ROW = 4
+local LIST_END_ROW   = h - 7
+local DIVIDER_ROW    = h - 6
+local NOWPLAY_ROW    = h - 5
+local SEEK_ROW       = h - 4
+local CONTROLS_ROW   = h - 3
+local VOLUME_ROW     = h - 2
+local FOOTER_ROW     = h - 1
+
+local listHeight = LIST_END_ROW - LIST_START_ROW + 1
+
+-- ---- State ----
+local files       = {}
+local selectedIdx = 1
+local scrollOff   = 0
+
+local playing     = false
+local nowPlaying  = nil
+local fileHandle  = nil
+local fileSize    = 0
+local currentByte = 0
+local seekTarget  = nil   -- set by UI loop, consumed by audio loop
+local volume      = 1.5
+
+local fileButtonRegions = {}
+local ctrlButtons       = {}
+
+-- ---- Helpers ----
+local function inRegion(r, mx, my)
+    return r and mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2
+end
+
+local function formatTime(secs)
+    secs = math.max(0, math.floor(secs))
+    return string.format("%d:%02d", math.floor(secs / 60), secs % 60)
+end
+
+local function loadFiles()
+    files = {}
+    if not fs.exists(AUDIO_DIR) then
+        fs.makeDir(AUDIO_DIR)
+        return
+    end
+    for _, name in ipairs(fs.list(AUDIO_DIR)) do
+        if not fs.isDir(AUDIO_DIR .. "/" .. name) and name:sub(-6) == ".dfpwm" then
+            table.insert(files, name)
+        end
+    end
+    table.sort(files)
+end
+
+-- ---- Draw functions ----
+local function drawHeader()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1)
+    term.setTextColor(UI.primary)
+    term.write("PunOS")
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.subtext)
+    term.write("Audio Player")
+    local info = "ID:" .. os.getComputerID()
+    term.setCursorPos(w - #info - 1, 2)
+    term.write(info)
+end
+
+local function drawFileList()
+    fileButtonRegions = {}
+
+    term.setBackgroundColor(UI.background)
+    term.setCursorPos(1, LIST_TITLE_ROW)
+    term.clearLine()
+    term.setCursorPos(2, LIST_TITLE_ROW)
+    term.setTextColor(UI.primary)
+    term.write("Audio Files  ")
+    term.setTextColor(UI.subtext)
+    term.write("(/audio/  .dfpwm)")
+
+    for row = LIST_START_ROW, LIST_END_ROW do
+        term.setCursorPos(1, row)
+        term.setBackgroundColor(UI.background)
+        term.clearLine()
+    end
+
+    if #files == 0 then
+        term.setCursorPos(2, LIST_START_ROW + 1)
+        term.setTextColor(UI.subtext)
+        term.write("No .dfpwm files found in /audio/")
+        term.setCursorPos(2, LIST_START_ROW + 2)
+        term.write("Use File Share > Upload to add audio.")
+        return
+    end
+
+    for i = 1 + scrollOff, math.min(#files, listHeight + scrollOff) do
+        local y = LIST_START_ROW + (i - 1 - scrollOff)
+        if y > LIST_END_ROW then break end
+
+        local isSelected = (i == selectedIdx)
+        local isPlaying  = (nowPlaying == files[i])
+
+        if isSelected then
+            paintutils.drawFilledBox(1, y, w, y, UI.primary)
+            term.setTextColor(UI.background)
+        else
+            term.setTextColor(isPlaying and UI.primary or UI.text)
+        end
+
+        term.setCursorPos(2, y)
+        local prefix = isPlaying and ">> " or "   "
+        local displayName = files[i]
+        if #prefix + #displayName > w - 2 then
+            displayName = displayName:sub(1, w - #prefix - 5) .. "..."
+        end
+        term.write(prefix .. displayName)
+
+        fileButtonRegions[i] = {x1 = 1, y1 = y, x2 = w, y2 = y}
+    end
+
+    if scrollOff > 0 then
+        term.setCursorPos(w - 5, LIST_START_ROW)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.write("[^ up]")
+    end
+    if scrollOff + listHeight < #files then
+        term.setCursorPos(w - 7, LIST_END_ROW)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.write("[v more]")
+    end
+end
+
+local function drawControls()
+    -- Divider
+    paintutils.drawFilledBox(1, DIVIDER_ROW, w, DIVIDER_ROW, UI.border)
+
+    -- Now playing row
+    term.setBackgroundColor(UI.background)
+    term.setCursorPos(1, NOWPLAY_ROW)
+    term.clearLine()
+    term.setCursorPos(2, NOWPLAY_ROW)
+    if nowPlaying then
+        term.setTextColor(UI.primary)
+        term.write(">> ")
+        term.setTextColor(UI.text)
+        local disp = nowPlaying
+        if #disp > w - 6 then disp = disp:sub(1, w - 9) .. "..." end
+        term.write(disp)
+    else
+        term.setTextColor(UI.subtext)
+        term.write("Nothing playing    select a file below")
+    end
+
+    -- Seek bar row
+    term.setCursorPos(1, SEEK_ROW)
+    term.setBackgroundColor(UI.background)
+    term.clearLine()
+
+    local curSecs   = currentByte / BYTES_PER_SEC
+    local totalSecs = fileSize    / BYTES_PER_SEC
+    local timeCur   = formatTime(curSecs)
+    local timeTotal = formatTime(totalSecs)
+
+    -- Time labels on left and right, bar in between
+    local labelLeft  = timeCur .. " "
+    local labelRight = " " .. timeTotal
+    local barX1 = 1 + #labelLeft
+    local barX2 = w - #labelRight
+    local barW  = barX2 - barX1 + 1
+
+    term.setCursorPos(1, SEEK_ROW)
+    if nowPlaying then
+        term.setTextColor(UI.subtext)
+        term.write(labelLeft)
+
+        -- Draw bar background
+        paintutils.drawFilledBox(barX1, SEEK_ROW, barX2, SEEK_ROW, UI.border)
+
+        -- Draw filled portion
+        local progress = (fileSize > 0) and (currentByte / fileSize) or 0
+        local filled = math.floor(barW * progress + 0.5)
+        if filled > 0 then
+            paintutils.drawFilledBox(barX1, SEEK_ROW, barX1 + filled - 1, SEEK_ROW, UI.primary)
+        end
+
+        term.setCursorPos(barX2 + 1, SEEK_ROW)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.write(labelRight)
+
+        ctrlButtons["seekBar"] = {
+            x1 = barX1, y1 = SEEK_ROW, x2 = barX2, y2 = SEEK_ROW,
+            barX1 = barX1, barW = barW
+        }
+    else
+        -- No file loaded  draw a flat empty bar
+        term.setTextColor(UI.subtext)
+        term.write("0:00 ")
+        paintutils.drawFilledBox(barX1, SEEK_ROW, barX2, SEEK_ROW, UI.border)
+        term.setCursorPos(barX2 + 1, SEEK_ROW)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.write(" 0:00")
+        ctrlButtons["seekBar"] = nil
+    end
+
+    -- Controls row
+    term.setCursorPos(1, CONTROLS_ROW)
+    term.setBackgroundColor(UI.background)
+    term.clearLine()
+
+    local bx = 2
+    local function addBtn(label, key, bgColor, fgColor)
+        local x1 = bx
+        local x2 = bx + #label - 1
+        paintutils.drawFilledBox(x1, CONTROLS_ROW, x2, CONTROLS_ROW, bgColor)
+        term.setCursorPos(x1, CONTROLS_ROW)
+        term.setTextColor(fgColor)
+        term.write(label)
+        ctrlButtons[key] = {x1 = x1, y1 = CONTROLS_ROW, x2 = x2, y2 = CONTROLS_ROW}
+        bx = bx + #label + 1
+    end
+
+    if playing then
+        addBtn(" Stop ", "play", UI.primary, UI.background)
+    else
+        addBtn(" Play ", "play", UI.border, UI.text)
+    end
+    addBtn(" Vol- ", "volMin",  UI.border, UI.text)
+    addBtn(" Vol+ ", "volPlus", UI.border, UI.text)
+
+    local exitLabel = " Exit "
+    local ex = w - #exitLabel
+    paintutils.drawFilledBox(ex, CONTROLS_ROW, w, CONTROLS_ROW, UI.border)
+    term.setCursorPos(ex, CONTROLS_ROW)
+    term.setTextColor(UI.text)
+    term.write(exitLabel)
+    ctrlButtons["exit"] = {x1 = ex, y1 = CONTROLS_ROW, x2 = w, y2 = CONTROLS_ROW}
+
+    -- Volume bar row
+    term.setCursorPos(1, VOLUME_ROW)
+    term.setBackgroundColor(UI.background)
+    term.clearLine()
+    term.setCursorPos(2, VOLUME_ROW)
+    term.setTextColor(UI.primary)
+    term.write("Vol:")
+
+    local vBarX1 = 7
+    local vBarX2 = w - 8
+    local vBarW  = vBarX2 - vBarX1 + 1
+    paintutils.drawBox(vBarX1, VOLUME_ROW, vBarX2, VOLUME_ROW, UI.border)
+    local vFilled = math.floor(vBarW * (volume / 3) + 0.5)
+    if vFilled > 0 then
+        paintutils.drawFilledBox(vBarX1, VOLUME_ROW, vBarX1 + vFilled - 1, VOLUME_ROW, UI.primary)
+    end
+    ctrlButtons["volBar"] = {x1 = vBarX1, y1 = VOLUME_ROW, x2 = vBarX2, y2 = VOLUME_ROW, barX1 = vBarX1, barW = vBarW}
+
+    term.setCursorPos(vBarX2 + 2, VOLUME_ROW)
+    term.setBackgroundColor(UI.background)
+    term.setTextColor(UI.text)
+    term.write(math.floor(volume / 3 * 100) .. "%  ")
+
+    -- Footer
+    term.setCursorPos(1, FOOTER_ROW)
+    term.setBackgroundColor(UI.background)
+    term.clearLine()
+    term.setCursorPos(2, FOOTER_ROW)
+    term.setTextColor(UI.subtext)
+    term.write("Up/Down or Scroll: Browse  |  Enter or Click: Play/Seek")
+end
+
+local function redraw()
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    drawHeader()
+    drawFileList()
+    drawControls()
+end
+
+-- ---- Audio control ----
+local function stopAudio()
+    playing     = false
+    seekTarget  = nil
+    currentByte = 0
+    speaker.stop()
+    if fileHandle then
+        fileHandle.close()
+        fileHandle = nil
+    end
+    decoder = require("cc.audio.dfpwm").make_decoder()
+end
+
+local function startAudio(filename)
+    if playing then stopAudio() end
+    local path = AUDIO_DIR .. "/" .. filename
+    if not fs.exists(path) then return false end
+    fileHandle = fs.open(path, "rb")
+    if not fileHandle then return false end
+    fileSize    = fs.getSize(path)
+    currentByte = 0
+    nowPlaying  = filename
+    playing     = true
+    seekTarget  = nil
+    decoder     = require("cc.audio.dfpwm").make_decoder()
+    os.queueEvent("audio_update")
+    return true
+end
+
+local function exitPlayer()
+    stopAudio()
+    term.setBackgroundColor(colors.black)
+    term.clear()
+    term.setCursorPos(1, 1)
+    shell.run("os/.programs")
+end
+
+-- ---- Scroll helper ----
+local function scrollTo(idx)
+    selectedIdx = math.max(1, math.min(#files, idx))
+    if selectedIdx - 1 < scrollOff then
+        scrollOff = selectedIdx - 1
+    elseif selectedIdx - 1 >= scrollOff + listHeight then
+        scrollOff = selectedIdx - listHeight
+    end
+end
+
+-- ---- UI loop ----
+local function uiLoop()
+    loadFiles()
+    redraw()
+
+    -- If a filename was passed as argument, auto-select and play it
+    if args[1] then
+        local target = fs.getName(args[1])
+        for i, f in ipairs(files) do
+            if f == target then
+                scrollTo(i)
+                startAudio(files[i])
+                drawFileList()
+                drawControls()
+                break
+            end
+        end
+    end
+
+    -- 1-second timer to refresh the seek bar while playing
+    local tickTimer = os.startTimer(1)
+
+    while true do
+        local e, p1, p2, p3 = os.pullEvent()
+
+        if e == "timer" and p1 == tickTimer then
+            if playing then drawControls() end
+            tickTimer = os.startTimer(1)
+
+        elseif e == "key" then
+            if p1 == keys.up or p1 == keys.w then
+                if selectedIdx > 1 then
+                    scrollTo(selectedIdx - 1)
+                    drawFileList()
+                    drawControls()
+                end
+
+            elseif p1 == keys.down or p1 == keys.s then
+                if selectedIdx < #files then
+                    scrollTo(selectedIdx + 1)
+                    drawFileList()
+                    drawControls()
+                end
+
+            elseif p1 == keys.enter then
+                if #files > 0 then
+                    startAudio(files[selectedIdx])
+                    drawFileList()
+                    drawControls()
+                end
+
+            elseif p1 == keys.backspace then
+                exitPlayer()
+                return
+            end
+
+        elseif e == "mouse_click" or e == "mouse_drag" then
+            local mx, my = p2, p3
+
+            -- Seek bar (click or drag)
+            local sb = ctrlButtons["seekBar"]
+            if sb and inRegion(sb, mx, my) then
+                local ratio = math.max(0, math.min(1, (mx - sb.barX1) / sb.barW))
+                seekTarget = math.floor(ratio * fileSize)
+                -- If not currently playing, open file and seek so position shows
+                if not playing and nowPlaying then
+                    local path = AUDIO_DIR .. "/" .. nowPlaying
+                    if fs.exists(path) then
+                        if fileHandle then fileHandle.close() end
+                        fileHandle  = fs.open(path, "rb")
+                        currentByte = seekTarget
+                        fileHandle.seek("set", currentByte)
+                        decoder     = require("cc.audio.dfpwm").make_decoder()
+                    end
+                    seekTarget = nil
+                end
+                drawControls()
+
+            elseif e == "mouse_click" then
+                -- Volume bar
+                local vb = ctrlButtons["volBar"]
+                if vb and inRegion(vb, mx, my) then
+                    volume = math.max(0, math.min(3, (mx - vb.barX1) / vb.barW * 3))
+                    drawControls()
+
+                -- File list
+                else
+                    local fileClicked = false
+                    for i, r in ipairs(fileButtonRegions) do
+                        if inRegion(r, mx, my) then
+                            if selectedIdx == i and #files > 0 then
+                                startAudio(files[i])
+                            else
+                                scrollTo(i)
+                            end
+                            fileClicked = true
+                            break
+                        end
+                    end
+
+                    if not fileClicked then
+                        if inRegion(ctrlButtons.play, mx, my) then
+                            if playing then
+                                stopAudio()
+                            elseif #files > 0 then
+                                startAudio(files[selectedIdx])
+                            end
+
+                        elseif inRegion(ctrlButtons.volMin, mx, my) then
+                            volume = math.max(0, volume - 0.3)
+
+                        elseif inRegion(ctrlButtons.volPlus, mx, my) then
+                            volume = math.min(3, volume + 0.3)
+
+                        elseif inRegion(ctrlButtons.exit, mx, my) then
+                            exitPlayer()
+                            return
+                        end
+                    end
+
+                    drawFileList()
+                    drawControls()
+                end
+
+            elseif e == "mouse_drag" then
+                -- Drag on volume bar
+                local vb = ctrlButtons["volBar"]
+                if vb and inRegion(vb, mx, my) then
+                    volume = math.max(0, math.min(3, (mx - vb.barX1) / vb.barW * 3))
+                    drawControls()
+                end
+            end
+
+        elseif e == "mouse_scroll" then
+            local dir = p1
+            if dir == 1 and scrollOff + listHeight < #files then
+                scrollOff = scrollOff + 1
+                drawFileList()
+            elseif dir == -1 and scrollOff > 0 then
+                scrollOff = scrollOff - 1
+                drawFileList()
+            end
+
+        elseif e == "audio_finished" then
+            playing     = false
+            nowPlaying  = nil
+            currentByte = 0
+            fileSize    = 0
+            drawFileList()
+            drawControls()
+        end
+    end
+end
+
+-- ---- Audio loop ----
+local function audioLoop()
+    while true do
+        os.pullEvent("audio_update")
+
+        while playing and fileHandle do
+            -- Handle a seek request between chunks
+            if seekTarget ~= nil then
+                fileHandle.seek("set", seekTarget)
+                currentByte = seekTarget
+                seekTarget  = nil
+                -- Reset decoder so there's no artefact from the previous position
+                decoder = require("cc.audio.dfpwm").make_decoder()
+                speaker.stop()
+            end
+
+            local chunk = fileHandle.read(16 * 1024)
+
+            if not chunk then
+                fileHandle.close()
+                fileHandle  = nil
+                playing     = false
+                currentByte = 0
+                os.queueEvent("audio_finished")
+                break
+            end
+
+            currentByte = currentByte + #chunk
+
+            local buffer = decoder(chunk)
+
+            while not speaker.playAudio(buffer, volume) do
+                repeat
+                    local _, name = os.pullEvent("speaker_audio_empty")
+                until name == speakerName
+                if not playing then break end
+            end
+
+            if not playing then break end
+        end
+    end
+end
+
+-- ---- Launch ----
+parallel.waitForAny(uiLoop, audioLoop)
+
+term.setBackgroundColor(colors.black)
+term.clear()
+term.setCursorPos(1, 1)

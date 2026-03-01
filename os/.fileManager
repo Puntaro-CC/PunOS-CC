@@ -1,0 +1,459 @@
+-- PunOS File Manager
+-- Browse, rename and delete files in /paint and /audio
+
+os.pullEvent = os.pullEventRaw
+
+local w, h = term.getSize()
+
+local UI = dofile("/os/loadTheme.lua")
+
+local DIRS = {
+    paint = {path = "/paint", ext = ".nfp",    label = "Paint"},
+    audio = {path = "/audio", ext = ".dfpwm",  label = "Audio"},
+}
+
+-- ---- Layout ----
+local TAB_ROW       = 3
+local LIST_START    = 4
+local LIST_END      = h - 4
+local DIVIDER_ROW   = h - 3
+local ACTIONS_ROW   = h - 2
+local FOOTER_ROW    = h - 1
+
+local listHeight = LIST_END - LIST_START + 1
+
+-- ---- State ----
+local activeTab   = "paint"   -- "paint" or "audio"
+local files       = {}
+local selectedIdx = 1
+local scrollOff   = 0
+
+local actionButtons = {}
+local tabButtons    = {}
+local fileButtons   = {}
+
+-- ---- Helpers ----
+local function inRegion(r, mx, my)
+    return r and mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2
+end
+
+local function loadFiles()
+    files = {}
+    local dir = DIRS[activeTab].path
+    if not fs.exists(dir) then fs.makeDir(dir) end
+    for _, name in ipairs(fs.list(dir)) do
+        if not fs.isDir(dir .. "/" .. name) then
+            table.insert(files, name)
+        end
+    end
+    table.sort(files)
+    selectedIdx = math.min(selectedIdx, math.max(1, #files))
+    scrollOff   = 0
+end
+
+local function scrollTo(idx)
+    selectedIdx = math.max(1, math.min(#files, idx))
+    if selectedIdx - 1 < scrollOff then
+        scrollOff = selectedIdx - 1
+    elseif selectedIdx - 1 >= scrollOff + listHeight then
+        scrollOff = selectedIdx - listHeight
+    end
+end
+
+-- ---- Draw ----
+local function drawHeader()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1)
+    term.setTextColor(UI.primary)
+    term.write("PunOS")
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.subtext)
+    term.write("File Manager")
+    local info = "ID:" .. os.getComputerID()
+    term.setCursorPos(w - #info - 1, 2)
+    term.write(info)
+end
+
+local function drawTabs()
+    tabButtons = {}
+    paintutils.drawFilledBox(1, TAB_ROW, w, TAB_ROW, UI.border)
+
+    local tabList = {"paint", "audio"}
+    local tabW = math.floor(w / #tabList)
+
+    for i, key in ipairs(tabList) do
+        local x1 = (i - 1) * tabW + 1
+        local x2 = x1 + tabW - 1
+        local label = " " .. DIRS[key].label .. " (" .. DIRS[key].ext .. ") "
+
+        if key == activeTab then
+            paintutils.drawFilledBox(x1, TAB_ROW, x2, TAB_ROW, UI.primary)
+            term.setTextColor(UI.background)
+        else
+            term.setTextColor(UI.subtext)
+        end
+
+        local lx = x1 + math.floor((tabW - #label) / 2)
+        term.setCursorPos(lx, TAB_ROW)
+        term.write(label)
+
+        tabButtons[key] = {x1 = x1, y1 = TAB_ROW, x2 = x2, y2 = TAB_ROW}
+    end
+end
+
+local function drawFileList()
+    fileButtons = {}
+
+    for row = LIST_START, LIST_END do
+        term.setCursorPos(1, row)
+        term.setBackgroundColor(UI.background)
+        term.clearLine()
+    end
+
+    if #files == 0 then
+        term.setCursorPos(2, LIST_START + 1)
+        term.setTextColor(UI.subtext)
+        term.write("No " .. DIRS[activeTab].ext .. " files found in " .. DIRS[activeTab].path)
+        return
+    end
+
+    for i = 1 + scrollOff, math.min(#files, listHeight + scrollOff) do
+        local y = LIST_START + (i - 1 - scrollOff)
+        if y > LIST_END then break end
+
+        if i == selectedIdx then
+            paintutils.drawFilledBox(1, y, w, y, UI.primary)
+            term.setTextColor(UI.background)
+        else
+            term.setBackgroundColor(UI.background)
+            term.setTextColor(UI.text)
+        end
+
+        term.setCursorPos(2, y)
+        local name = files[i]
+        if #name > w - 3 then name = name:sub(1, w - 6) .. "..." end
+        term.write(name)
+
+        fileButtons[i] = {x1 = 1, y1 = y, x2 = w, y2 = y}
+    end
+
+    -- Scroll hints
+    if scrollOff > 0 then
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.setCursorPos(w - 5, LIST_START)
+        term.write("[^ up]")
+    end
+    if scrollOff + listHeight < #files then
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.setCursorPos(w - 7, LIST_END)
+        term.write("[v more]")
+    end
+end
+
+local function drawActions()
+    actionButtons = {}
+
+    paintutils.drawFilledBox(1, DIVIDER_ROW, w, DIVIDER_ROW, UI.border)
+
+    term.setCursorPos(1, ACTIONS_ROW)
+    term.setBackgroundColor(UI.background)
+    term.clearLine()
+
+    local hasFile = #files > 0
+
+    local bx = 2
+    local function addBtn(label, key, enabled)
+        local bg = enabled and UI.border or UI.background
+        local fg = enabled and UI.text   or UI.subtext
+        local x1, x2 = bx, bx + #label - 1
+        paintutils.drawFilledBox(x1, ACTIONS_ROW, x2, ACTIONS_ROW, bg)
+        term.setCursorPos(x1, ACTIONS_ROW)
+        term.setTextColor(fg)
+        term.write(label)
+        if enabled then
+            actionButtons[key] = {x1 = x1, y1 = ACTIONS_ROW, x2 = x2, y2 = ACTIONS_ROW}
+        end
+        bx = bx + #label + 1
+    end
+
+    addBtn(" Open   ", "open",   hasFile)
+    addBtn(" Rename ", "rename", hasFile)
+    addBtn(" Delete ", "delete", hasFile)
+
+    -- Back flush right
+    local backLabel = " Back "
+    local bkx = w - #backLabel
+    paintutils.drawFilledBox(bkx, ACTIONS_ROW, w, ACTIONS_ROW, UI.border)
+    term.setCursorPos(bkx, ACTIONS_ROW)
+    term.setTextColor(UI.text)
+    term.write(backLabel)
+    actionButtons["back"] = {x1 = bkx, y1 = ACTIONS_ROW, x2 = w, y2 = ACTIONS_ROW}
+
+    -- Footer
+    term.setCursorPos(1, FOOTER_ROW)
+    term.setBackgroundColor(UI.background)
+    term.clearLine()
+    term.setCursorPos(2, FOOTER_ROW)
+    term.setTextColor(UI.subtext)
+    term.write("Up/Down: Select  |  Tab: Switch tab  |  R: Rename  |  Del: Delete")
+end
+
+local function redraw()
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    drawHeader()
+    drawTabs()
+    drawFileList()
+    drawActions()
+end
+
+-- ---- Actions ----
+
+-- Simple overlay prompt drawn over the current screen
+local function prompt(question)
+    local boxW = math.min(#question + 6, w - 4)
+    local boxX = math.floor((w - boxW) / 2)
+    local boxY = math.floor(h / 2) - 2
+
+    paintutils.drawFilledBox(boxX, boxY, boxX + boxW, boxY + 4, UI.border)
+    paintutils.drawFilledBox(boxX + 1, boxY + 1, boxX + boxW - 1, boxY + 3, UI.background)
+
+    term.setCursorPos(boxX + 2, boxY + 1)
+    term.setTextColor(UI.primary)
+    local q = question
+    if #q > boxW - 3 then q = q:sub(1, boxW - 6) .. "..." end
+    term.write(q)
+
+    term.setCursorPos(boxX + 2, boxY + 2)
+    term.setTextColor(UI.text)
+    term.setBackgroundColor(UI.background)
+    local input = read()
+    return input
+end
+
+-- Confirm dialog  returns true if user picks Yes
+local function confirm(question)
+    local boxW = math.min(#question + 6, w - 4)
+    local boxX = math.floor((w - boxW) / 2)
+    local boxY = math.floor(h / 2) - 2
+
+    paintutils.drawFilledBox(boxX, boxY, boxX + boxW, boxY + 5, UI.border)
+    paintutils.drawFilledBox(boxX + 1, boxY + 1, boxX + boxW - 1, boxY + 4, UI.background)
+
+    term.setCursorPos(boxX + 2, boxY + 1)
+    term.setTextColor(UI.primary)
+    local q = question
+    if #q > boxW - 3 then q = q:sub(1, boxW - 6) .. "..." end
+    term.write(q)
+
+    -- Yes / No buttons
+    local yesLabel = " Yes "
+    local noLabel  = " No  "
+    local yesX = boxX + 2
+    local noX  = boxX + boxW - #noLabel - 1
+    local btnY = boxY + 3
+
+    local nOption = 2  -- default to No for safety
+    local yesR = {x1 = yesX, y1 = btnY, x2 = yesX + #yesLabel - 1, y2 = btnY}
+    local noR  = {x1 = noX,  y1 = btnY, x2 = noX  + #noLabel  - 1, y2 = btnY}
+
+    local function drawBtns()
+        paintutils.drawFilledBox(yesR.x1, btnY, yesR.x2, btnY, nOption == 1 and UI.primary or UI.border)
+        term.setCursorPos(yesR.x1, btnY)
+        term.setTextColor(nOption == 1 and UI.background or UI.text)
+        term.write(yesLabel)
+
+        paintutils.drawFilledBox(noR.x1, btnY, noR.x2, btnY, nOption == 2 and UI.primary or UI.border)
+        term.setCursorPos(noR.x1, btnY)
+        term.setTextColor(nOption == 2 and UI.background or UI.text)
+        term.write(noLabel)
+    end
+
+    drawBtns()
+
+    while true do
+        local e, p1, p2, p3 = os.pullEvent()
+        if e == "key" then
+            if p1 == keys.left or p1 == keys.a then
+                nOption = 1; drawBtns()
+            elseif p1 == keys.right or p1 == keys.d then
+                nOption = 2; drawBtns()
+            elseif p1 == keys.enter then
+                return nOption == 1
+            elseif p1 == keys.n then
+                return false
+            elseif p1 == keys.y then
+                return true
+            end
+        elseif e == "mouse_click" then
+            local mx, my = p2, p3
+            if inRegion(yesR, mx, my) then return true
+            elseif inRegion(noR, mx, my) then return false
+            end
+        end
+    end
+end
+
+local function doOpen()
+    if #files == 0 then return end
+    local name = files[selectedIdx]
+    if activeTab == "audio" then
+        shell.run("os/.audioPlayer", name)
+    elseif activeTab == "paint" then
+        -- Strip extension for paintViewer
+        local base = name:sub(-4) == ".nfp" and name:sub(1, -5) or name
+        shell.run("os/.paintViewer", base)
+    end
+    redraw()
+end
+
+local function doRename()
+    if #files == 0 then return end
+    local oldName = files[selectedIdx]
+    local dir     = DIRS[activeTab].path
+    local ext     = DIRS[activeTab].ext
+
+    local newName = prompt("Rename '" .. oldName .. "' to:")
+    if not newName or newName == "" or newName == oldName then
+        redraw(); return
+    end
+
+    -- Ensure extension is preserved
+    if newName:sub(-#ext) ~= ext then
+        newName = newName .. ext
+    end
+
+    local oldPath = dir .. "/" .. oldName
+    local newPath = dir .. "/" .. newName
+
+    if fs.exists(newPath) then
+        -- Warn and abort if name already taken
+        redraw()
+        term.setCursorPos(2, FOOTER_ROW)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(colors.red)
+        term.write("'" .. newName .. "' already exists. Rename cancelled.")
+        sleep(2)
+    else
+        fs.move(oldPath, newPath)
+    end
+
+    loadFiles()
+    redraw()
+end
+
+local function doDelete()
+    if #files == 0 then return end
+    local name = files[selectedIdx]
+    local path = DIRS[activeTab].path .. "/" .. name
+
+    if confirm("Delete '" .. name .. "'?") then
+        fs.delete(path)
+        if selectedIdx > 1 then selectedIdx = selectedIdx - 1 end
+        loadFiles()
+    end
+    redraw()
+end
+
+-- ---- Main loop ----
+loadFiles()
+redraw()
+
+while true do
+    local e, p1, p2, p3 = os.pullEvent()
+
+    if e == "key" then
+        if p1 == keys.up or p1 == keys.w then
+            if selectedIdx > 1 then
+                scrollTo(selectedIdx - 1)
+                drawFileList()
+                drawActions()
+            end
+
+        elseif p1 == keys.down or p1 == keys.s then
+            if selectedIdx < #files then
+                scrollTo(selectedIdx + 1)
+                drawFileList()
+                drawActions()
+            end
+
+        elseif p1 == keys.tab then
+            activeTab   = (activeTab == "paint") and "audio" or "paint"
+            selectedIdx = 1
+            loadFiles()
+            redraw()
+
+        elseif p1 == keys.o then
+            doOpen()
+
+        elseif p1 == keys.r then
+            doRename()
+
+        elseif p1 == keys.delete then
+            doDelete()
+
+        elseif p1 == keys.backspace then
+            break
+        end
+
+    elseif e == "mouse_click" then
+        local mx, my = p2, p3
+
+        -- Tab clicks
+        local tabClicked = false
+        for key, r in pairs(tabButtons) do
+            if inRegion(r, mx, my) and key ~= activeTab then
+                activeTab   = key
+                selectedIdx = 1
+                loadFiles()
+                redraw()
+                tabClicked  = true
+                break
+            end
+        end
+
+        if not tabClicked then
+            -- File list clicks
+            local fileClicked = false
+            for i, r in ipairs(fileButtons) do
+                if inRegion(r, mx, my) then
+                    scrollTo(i)
+                    drawFileList()
+                    drawActions()
+                    fileClicked = true
+                    break
+                end
+            end
+
+            if not fileClicked then
+                -- Action button clicks
+                if inRegion(actionButtons.open, mx, my) then
+                    doOpen()
+                elseif inRegion(actionButtons.rename, mx, my) then
+                    doRename()
+                elseif inRegion(actionButtons.delete, mx, my) then
+                    doDelete()
+                elseif inRegion(actionButtons.back, mx, my) then
+                    break
+                end
+            end
+        end
+
+    elseif e == "mouse_scroll" then
+        local dir = p1
+        if dir == 1 and scrollOff + listHeight < #files then
+            scrollOff = scrollOff + 1
+            drawFileList()
+        elseif dir == -1 and scrollOff > 0 then
+            scrollOff = scrollOff - 1
+            drawFileList()
+        end
+    end
+end
+
+term.setBackgroundColor(colors.black)
+term.clear()
+term.setCursorPos(1, 1)
+shell.run("os/.programs")

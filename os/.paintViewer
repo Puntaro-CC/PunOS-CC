@@ -1,0 +1,209 @@
+-- PunOS Paint Viewer
+-- View .nfp image files with PunOS styling
+-- Usage: .paintViewer [filename]   (filename without path or extension)
+
+os.pullEvent = os.pullEventRaw
+
+local args = { ... }
+local w, h = term.getSize()
+
+local UI = dofile("/os/loadTheme.lua")
+
+local PAINT_DIR = "/paint"
+
+-- ---- Header (2 rows) ----
+local function drawHeader(filename)
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1)
+    term.setTextColor(UI.primary)
+    term.write("PunOS")
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.subtext)
+    local disp = filename or "Paint Viewer"
+    if #disp > w - 10 then disp = disp:sub(1, w - 13) .. "..." end
+    term.write(disp)
+    local info = "ID:" .. os.getComputerID()
+    term.setCursorPos(w - #info - 1, 2)
+    term.write(info)
+end
+
+-- ---- Footer (1 row) ----
+local function drawFooter()
+    term.setCursorPos(1, h)
+    term.setBackgroundColor(UI.border)
+    term.clearLine()
+    term.setCursorPos(2, h)
+    term.setTextColor(UI.subtext)
+    term.write("Any key or click to return")
+end
+
+-- ---- File picker ----
+local function pickFile()
+    if not fs.exists(PAINT_DIR) then
+        fs.makeDir(PAINT_DIR)
+    end
+
+    local allFiles = {}
+    for _, name in ipairs(fs.list(PAINT_DIR)) do
+        if not fs.isDir(PAINT_DIR .. "/" .. name) and name:sub(-4) == ".nfp" then
+            table.insert(allFiles, name)
+        end
+    end
+    table.sort(allFiles)
+
+    if #allFiles == 0 then
+        term.setBackgroundColor(UI.background)
+        term.clear()
+        drawHeader("Paint Viewer")
+        term.setCursorPos(2, 4)
+        term.setTextColor(UI.subtext)
+        term.write("No .nfp files found in /paint/")
+        drawFooter()
+        repeat local ev = os.pullEvent() until ev == "key" or ev == "mouse_click"
+        shell.run("os/.programs")
+        return nil
+    end
+
+    -- Simple scrollable picker
+    local selectedIdx = 1
+    local scrollOff   = 0
+    local listH       = h - 4
+    local buttons     = {}
+
+    local function drawPicker()
+        term.setBackgroundColor(UI.background)
+        term.clear()
+        drawHeader("Paint Viewer  Choose file")
+
+        term.setCursorPos(2, 3)
+        term.setTextColor(UI.primary)
+        term.write("Select an image to view:")
+
+        buttons = {}
+        for i = 1 + scrollOff, math.min(#allFiles, listH + scrollOff) do
+            local y = 4 + (i - 1 - scrollOff)
+            if y >= h then break end
+            if i == selectedIdx then
+                paintutils.drawFilledBox(1, y, w, y, UI.primary)
+                term.setTextColor(UI.background)
+            else
+                term.setBackgroundColor(UI.background)
+                term.setTextColor(UI.text)
+            end
+            term.setCursorPos(2, y)
+            term.write(allFiles[i])
+            buttons[i] = {x1 = 1, y1 = y, x2 = w, y2 = y}
+        end
+
+        drawFooter()
+    end
+
+    drawPicker()
+
+    while true do
+        local e, p1, p2, p3 = os.pullEvent()
+        if e == "key" then
+            if p1 == keys.up or p1 == keys.w then
+                if selectedIdx > 1 then
+                    selectedIdx = selectedIdx - 1
+                    if selectedIdx - 1 < scrollOff then scrollOff = selectedIdx - 1 end
+                    drawPicker()
+                end
+            elseif p1 == keys.down or p1 == keys.s then
+                if selectedIdx < #allFiles then
+                    selectedIdx = selectedIdx + 1
+                    if selectedIdx - 1 >= scrollOff + listH then scrollOff = selectedIdx - listH end
+                    drawPicker()
+                end
+            elseif p1 == keys.enter then
+                return allFiles[selectedIdx]
+            elseif p1 == keys.backspace then
+                return nil
+            end
+        elseif e == "mouse_click" then
+            local mx, my = p2, p3
+            for i, r in ipairs(buttons) do
+                if mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2 then
+                    if selectedIdx == i then
+                        return allFiles[i]
+                    else
+                        selectedIdx = i
+                        drawPicker()
+                    end
+                    break
+                end
+            end
+        end
+    end
+end
+
+-- ---- Main ----
+local filename = args[1]
+
+-- Strip path/extension if passed fully qualified
+if filename then
+    filename = fs.getName(filename)
+    if filename:sub(-4) == ".nfp" then
+        filename = filename:sub(1, -5)
+    end
+end
+
+-- If no arg, show picker
+if not filename then
+    local chosen = pickFile()
+    if not chosen then
+        shell.run("os/.programs")
+        return
+    end
+    filename = chosen:sub(-4) == ".nfp" and chosen:sub(1,-5) or chosen
+end
+
+local filepath = PAINT_DIR .. "/" .. filename .. ".nfp"
+
+if not fs.exists(filepath) then
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    drawHeader(filename .. ".nfp")
+    term.setCursorPos(2, 4)
+    term.setTextColor(colors.red)
+    term.write("File not found: " .. filepath)
+    drawFooter()
+    repeat local ev = os.pullEvent() until ev == "key" or ev == "mouse_click"
+    shell.run("os/.programs")
+    return
+end
+
+-- Load image
+local image = paintutils.loadImage(filepath)
+if not image then
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    drawHeader(filename .. ".nfp")
+    term.setCursorPos(2, 4)
+    term.setTextColor(colors.red)
+    term.write("Failed to load image.")
+    drawFooter()
+    repeat local ev = os.pullEvent() until ev == "key" or ev == "mouse_click"
+    shell.run("os/.programs")
+    return
+end
+
+-- Draw
+term.setBackgroundColor(UI.background)
+term.clear()
+drawHeader(filename .. ".nfp")
+
+-- Draw image starting at row 3 (below header)
+paintutils.drawImage(image, 1, 3)
+
+drawFooter()
+
+-- Wait for a deliberate key or click to close, ignoring mouse_up
+repeat
+    repeat local ev = os.pullEvent() until ev == "key" or ev == "mouse_click"
+until ev == "key" or ev == "mouse_click"
+
+term.setBackgroundColor(colors.black)
+term.clear()
+term.setCursorPos(1, 1)
+shell.run("os/.programs")

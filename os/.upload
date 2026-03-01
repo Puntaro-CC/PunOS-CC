@@ -1,0 +1,229 @@
+-- PunOS File Upload Client v5.2
+-- Uploads .nfp (paint) or .dfpwm (audio) files to the file share server
+
+local PROTOCOL = "nfp_share"
+
+local UI = dofile("/os/loadTheme.lua")
+
+local TYPE_INFO = {
+    paint = {ext = ".nfp",    dir = "/paint", label = "Paint image"},
+    audio = {ext = ".dfpwm", dir = "/audio",  label = "Audio file"}
+}
+
+local modem = peripheral.find("modem") or error("No modem found!")
+rednet.open(peripheral.getName(modem))
+
+local w, h = term.getSize()
+
+-- Header
+term.clear()
+term.setTextColor(UI.primary)
+local title = "FILE UPLOAD"
+term.setCursorPos(math.floor((w - #title) / 2), 2)
+print(title)
+term.setCursorPos(1, 3)
+print(string.rep("=", w))
+term.setTextColor(colors.white)
+print("")
+
+-- ---- Step 1: File type ----
+term.setTextColor(UI.secondary)
+print("What type of file are you uploading?")
+term.setTextColor(colors.white)
+print("  [1] Paint image  (.nfp)")
+print("  [2] Audio file   (.dfpwm)")
+print("")
+term.setTextColor(UI.secondary)
+print("Enter 1 or 2:")
+term.setTextColor(colors.white)
+
+local typeChoice = read()
+local fileType, info
+
+if typeChoice == "1" then
+    fileType = "paint"
+elseif typeChoice == "2" then
+    fileType = "audio"
+else
+    term.setTextColor(UI.error)
+    print("Invalid choice.")
+    term.setTextColor(colors.white)
+    sleep(2)
+    shell.run("os/.fileShare")
+    return
+end
+
+info = TYPE_INFO[fileType]
+print("")
+term.setTextColor(UI.secondary)
+print("Selected: " .. info.label .. " (" .. info.ext .. ")")
+term.setTextColor(colors.white)
+print("")
+
+-- ---- Step 2: Server ID ----
+term.setTextColor(UI.secondary)
+print("Enter server ID (text or number):")
+term.setTextColor(colors.white)
+local serverID = read()
+
+if serverID == "" then
+    term.setTextColor(UI.error)
+    print("Invalid server ID.")
+    term.setTextColor(colors.white)
+    sleep(2)
+    shell.run("os/.fileShare")
+    return
+end
+
+term.setTextColor(UI.secondary)
+print("Looking up server...")
+term.setTextColor(colors.white)
+local foundID = rednet.lookup(PROTOCOL, serverID)
+
+if not foundID then
+    term.setTextColor(UI.error)
+    print("Warning: '" .. serverID .. "' not found on network.")
+    term.setTextColor(UI.secondary)
+    print("Continue anyway? (y/n):")
+    term.setTextColor(colors.white)
+    if read() ~= "y" then
+        shell.run("os/.fileShare")
+        return
+    end
+    foundID = rednet.lookup(PROTOCOL)
+    if not foundID then
+        term.setTextColor(UI.error)
+        print("No servers found on network.")
+        term.setTextColor(colors.white)
+        sleep(2)
+        return
+    end
+else
+    term.setTextColor(UI.success)
+    print("Server found!")
+    term.setTextColor(colors.white)
+    sleep(0.5)
+end
+
+print("")
+
+-- ---- Step 3: List local files of the chosen type ----
+term.setTextColor(UI.secondary)
+print("Your local " .. info.label .. " files (" .. info.dir .. "):")
+term.setTextColor(colors.white)
+print("")
+
+local localFiles = {}
+if fs.exists(info.dir) and fs.isDir(info.dir) then
+    for _, f in ipairs(fs.list(info.dir)) do
+        if not fs.isDir(info.dir .. "/" .. f) and f:sub(-#info.ext) == info.ext then
+            table.insert(localFiles, f)
+        end
+    end
+end
+
+if #localFiles > 0 then
+    term.setTextColor(UI.subtext)
+    for _, f in ipairs(localFiles) do
+        print("  - " .. f)
+    end
+    term.setTextColor(colors.white)
+else
+    term.setTextColor(colors.gray)
+    print("  (no " .. info.ext .. " files found in " .. info.dir .. ")")
+    term.setTextColor(colors.white)
+end
+
+print("")
+
+-- ---- Step 4: Filename ----
+term.setTextColor(UI.secondary)
+print("Enter filename to upload (must end in " .. info.ext .. "):")
+term.setTextColor(colors.white)
+local filename = read()
+
+-- Safety check: extension must match chosen type
+if filename:sub(-#info.ext) ~= info.ext then
+    term.setTextColor(UI.error)
+    print("Error: filename must end in '" .. info.ext .. "' for the " .. info.label .. " store.")
+    print("Upload cancelled.")
+    term.setTextColor(colors.white)
+    sleep(3)
+    shell.run("os/.fileShare")
+    return
+end
+
+local filepath = info.dir .. "/" .. filename
+
+if not fs.exists(filepath) then
+    term.setTextColor(UI.error)
+    print("File not found: " .. filepath)
+    term.setTextColor(colors.white)
+    sleep(2)
+    shell.run("os/.fileShare")
+    return
+end
+
+-- ---- Step 5: Optional recipient ----
+print("")
+term.setTextColor(UI.secondary)
+print("Recipient computer ID (leave blank for public):")
+term.setTextColor(colors.white)
+local recipientInput = read()
+local recipient = nil
+
+if recipientInput ~= "" then
+    recipient = tonumber(recipientInput)
+    if not recipient then
+        term.setTextColor(UI.error)
+        print("Invalid recipient ID.")
+        term.setTextColor(colors.white)
+        sleep(2)
+        shell.run("os/.fileShare")
+        return
+    end
+end
+
+-- ---- Step 6: Read & send ----
+local file = fs.open(filepath, "r")
+local data = file.readAll()
+file.close()
+
+term.setTextColor(UI.secondary)
+if recipient then
+    print("Uploading " .. filename .. " for ID:" .. recipient .. "...")
+else
+    print("Uploading " .. filename .. " publicly...")
+end
+term.setTextColor(colors.white)
+
+rednet.send(foundID, {
+    action    = "upload",
+    fileType  = fileType,
+    filename  = filename,
+    data      = data,
+    recipient = recipient
+}, PROTOCOL)
+
+local id, response = rednet.receive(PROTOCOL, 5)
+
+if id == foundID and response and response.success then
+    term.setTextColor(UI.success)
+    print("Success: " .. response.message)
+    term.setTextColor(UI.subtext)
+    if recipient then
+        print("Only ID:" .. recipient .. " can download this file.")
+        print("File will auto-delete after download.")
+    else
+        print("File is publicly accessible.")
+    end
+    term.setTextColor(colors.white)
+else
+    term.setTextColor(UI.error)
+    print("Upload failed: " .. (response and response.message or "No response"))
+    term.setTextColor(colors.white)
+end
+
+sleep(3)
+rednet.close()
+shell.run("os/.fileShare")

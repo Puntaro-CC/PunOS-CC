@@ -1,0 +1,59 @@
+-- PunOS Paint - New Image
+os.pullEvent = os.pullEventRaw
+local UI = dofile("/os/loadTheme.lua")
+
+local w, h = term.getSize()
+
+-- Header
+paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+term.setCursorPos(2, 1)
+term.setTextColor(UI.primary)
+term.write("PunOS")
+term.setCursorPos(2, 2)
+term.setTextColor(UI.subtext)
+term.write("Paint    New Image")
+
+-- Prompt
+local promptY = math.floor(h / 2) - 1
+term.setCursorPos(1, promptY)
+term.setBackgroundColor(UI.background)
+term.clearLine()
+local msg = "Name your image (without extension):"
+term.setCursorPos(math.floor((w - #msg) / 2), promptY)
+term.setTextColor(UI.primary)
+term.write(msg)
+
+-- Input box
+paintutils.drawFilledBox(4, promptY + 1, w - 3, promptY + 1, UI.border)
+term.setCursorPos(5, promptY + 1)
+term.setTextColor(UI.text)
+term.setBackgroundColor(UI.border)
+local file = read()
+
+if file == nil or file == "" then
+    shell.run("os/.choosePaint")
+    return
+end
+
+-- Ensure no extension double-up
+if file:sub(-4) == ".nfp" then
+    file = file:sub(1, -5)
+end
+
+-- Ensure /paint dir exists
+if not fs.exists("/paint") then fs.makeDir("/paint") end
+
+-- Brief feedback
+term.setBackgroundColor(UI.background)
+term.setCursorPos(1, promptY + 3)
+term.clearLine()
+local creating = "Opening paint editor for: " .. file .. ".nfp"
+term.setCursorPos(math.floor((w - #creating) / 2), promptY + 3)
+term.setTextColor(UI.subtext)
+term.write(creating)
+sleep(0.5)
+
+shell.run("paint", "/paint/" .. file)
+
+-- Return to choosePaint after editor closes
+shell.run("os/.choosePaint")

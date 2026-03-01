@@ -1,0 +1,119 @@
+-- PunOS Uninstall Confirmation Dialog
+os.pullEvent = os.pullEventRaw
+local UI = dofile("/os/loadTheme.lua")
+
+local w, h = term.getSize()
+
+local nOption = 1
+local buttonRegions = {}
+
+local function drawMenu()
+    term.setBackgroundColor(UI.background)
+    term.clear()
+
+    -- Header
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1)
+    term.setTextColor(UI.primary)
+    term.write("PunOS")
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.subtext)
+    term.write("Uninstall")
+
+    -- Warning box
+    local boxW = math.min(w - 4, 32)
+    local boxX = math.floor((w - boxW) / 2)
+    local boxY = math.floor(h / 2) - 4
+
+    paintutils.drawFilledBox(boxX, boxY, boxX + boxW, boxY + 5, UI.border)
+    paintutils.drawFilledBox(boxX + 1, boxY + 1, boxX + boxW - 1, boxY + 4, UI.background)
+
+    term.setCursorPos(boxX + math.floor((boxW - 7) / 2), boxY)
+    term.setBackgroundColor(UI.border)
+    term.setTextColor(UI.error)
+    term.write("WARNING")
+
+    term.setCursorPos(boxX + 2, boxY + 1)
+    term.setBackgroundColor(UI.background)
+    term.setTextColor(UI.text)
+    term.write("This will delete all PunOS files.")
+
+    term.setCursorPos(boxX + 2, boxY + 2)
+    term.setTextColor(UI.subtext)
+    term.write("Your data files will remain.")
+
+    term.setCursorPos(boxX + 2, boxY + 3)
+    term.setTextColor(UI.text)
+    term.write("Are you sure?")
+
+    -- Buttons
+    local btnY = boxY + 7
+    local btnW = 12
+
+    local confirmX = math.floor(w / 2) - btnW - 1
+    local backX    = math.floor(w / 2) + 2
+
+    if nOption == 1 then
+        paintutils.drawFilledBox(confirmX, btnY, confirmX + btnW - 1, btnY, UI.error)
+        term.setCursorPos(confirmX + math.floor((btnW - 9) / 2), btnY)
+        term.setTextColor(UI.text)
+        term.write(" Uninstall ")
+    else
+        paintutils.drawFilledBox(confirmX, btnY, confirmX + btnW - 1, btnY, UI.border)
+        term.setCursorPos(confirmX + math.floor((btnW - 9) / 2), btnY)
+        term.setTextColor(UI.subtext)
+        term.write(" Uninstall ")
+    end
+
+    if nOption == 2 then
+        paintutils.drawFilledBox(backX, btnY, backX + btnW - 1, btnY, UI.primary)
+        term.setCursorPos(backX + math.floor((btnW - 6) / 2), btnY)
+        term.setTextColor(UI.background)
+        term.write("  Back  ")
+    else
+        paintutils.drawFilledBox(backX, btnY, backX + btnW - 1, btnY, UI.border)
+        term.setCursorPos(backX + math.floor((btnW - 6) / 2), btnY)
+        term.setTextColor(UI.text)
+        term.write("  Back  ")
+    end
+
+    buttonRegions[1] = {x1 = confirmX, y1 = btnY, x2 = confirmX + btnW - 1, y2 = btnY}
+    buttonRegions[2] = {x1 = backX,    y1 = btnY, x2 = backX    + btnW - 1, y2 = btnY}
+
+    term.setCursorPos(2, h)
+    term.setBackgroundColor(UI.background)
+    term.setTextColor(UI.subtext)
+    term.write("A/D or Click: Select | Enter: Confirm")
+end
+
+drawMenu()
+
+while true do
+    local e, p, p2, p3 = os.pullEvent()
+
+    if e == "key" then
+        if p == keys.a or p == keys.left then
+            if nOption > 1 then nOption = nOption - 1; drawMenu() end
+        elseif p == keys.d or p == keys.right then
+            if nOption < 2 then nOption = nOption + 1; drawMenu() end
+        elseif p == keys.enter then break end
+
+    elseif e == "mouse_click" then
+        local mx, my = p2, p3
+        for i, r in ipairs(buttonRegions) do
+            if mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2 then
+                nOption = i; drawMenu(); sleep(0.08); break
+            end
+        end
+        break
+    end
+end
+
+term.setBackgroundColor(colors.black)
+term.clear()
+
+if nOption == 1 then
+    shell.run("uninstall")
+else
+    shell.run(".menu")
+end

@@ -1,0 +1,111 @@
+﻿-- PunOS Theme Module
+-- Returns the active UI color table based on /.theme
+
+local THEME_FILE = "/.theme"
+
+local themes = {
+    classic = {
+        themeName  = "Classic",
+        primary    = colors.orange,
+        secondary  = colors.yellow,
+        background = colors.black,
+        text       = colors.white,
+        subtext    = colors.lightGray,
+        border     = colors.gray,
+        success    = colors.lime,
+        error      = colors.red,
+        fgDark     = colors.black,
+        btnNum     = colors.gray,
+        btnOp      = colors.orange,
+        btnFn      = colors.blue,
+        btnSpec    = colors.cyan,
+        btnClear   = colors.red,
+        btnEqual   = colors.lime,
+        selected   = colors.white,
+    },
+    popos = {
+        themeName  = "Pop_OS",
+        primary    = colors.purple,
+        secondary  = colors.magenta,
+        background = colors.black,
+        text       = colors.white,
+        subtext    = colors.lightGray,
+        border     = colors.gray,
+        success    = colors.lime,
+        error      = colors.red,
+        fgDark     = colors.black,
+        btnNum     = colors.gray,
+        btnOp      = colors.purple,
+        btnFn      = colors.magenta,
+        btnSpec    = colors.cyan,
+        btnClear   = colors.red,
+        btnEqual   = colors.lime,
+        selected   = colors.white,
+    },
+    hacker = {
+        themeName  = "Hacker",
+        primary    = colors.lime,
+        secondary  = colors.green,
+        background = colors.black,
+        text       = colors.white,
+        subtext    = colors.green,
+        border     = colors.gray,
+        success    = colors.lime,
+        error      = colors.red,
+        fgDark     = colors.black,
+        btnNum     = colors.gray,
+        btnOp      = colors.lime,
+        btnFn      = colors.green,
+        btnSpec    = colors.cyan,
+        btnClear   = colors.red,
+        btnEqual   = colors.lime,
+        selected   = colors.white,
+    },
+    ocean = {
+        themeName  = "Ocean",
+        primary    = colors.cyan,
+        secondary  = colors.lightBlue,
+        background = colors.black,
+        text       = colors.white,
+        subtext    = colors.lightGray,
+        border     = colors.gray,
+        success    = colors.lime,
+        error      = colors.red,
+        fgDark     = colors.black,
+        btnNum     = colors.gray,
+        btnOp      = colors.cyan,
+        btnFn      = colors.lightBlue,
+        btnSpec    = colors.blue,
+        btnClear   = colors.red,
+        btnEqual   = colors.lime,
+        selected   = colors.white,
+    },
+    midnight = {
+        themeName  = "Midnight",
+        primary    = colors.blue,
+        secondary  = colors.lightBlue,
+        background = colors.black,
+        text       = colors.white,
+        subtext    = colors.lightGray,
+        border     = colors.gray,
+        success    = colors.lime,
+        error      = colors.red,
+        fgDark     = colors.black,
+        btnNum     = colors.gray,
+        btnOp      = colors.blue,
+        btnFn      = colors.lightBlue,
+        btnSpec    = colors.cyan,
+        btnClear   = colors.red,
+        btnEqual   = colors.lime,
+        selected   = colors.white,
+    },
+}
+
+local name = "classic"
+if fs.exists(THEME_FILE) then
+    local f = fs.open(THEME_FILE, "r")
+    name = f.readAll():gsub("[%s%z]", "")
+    f.close()
+end
+
+return themes[name] or themes.classic

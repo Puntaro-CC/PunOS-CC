@@ -1,0 +1,282 @@
+-- PunOS File Share Server v5.2
+-- Stores .nfp (paint) and .dfpwm (audio) files in separate directories
+
+local PROTOCOL    = "nfp_share"
+local CONFIG_FILE = "/.server_config"
+local DIR_PAINT   = "/.server_files/paint"
+local DIR_AUDIO   = "/.server_files/audio"
+
+-- Valid extensions per type
+local TYPE_EXT = {
+    paint = ".nfp",
+    audio = ".dfpwm"
+}
+
+local function dirForType(fileType)
+    if fileType == "paint" then return DIR_PAINT
+    elseif fileType == "audio" then return DIR_AUDIO
+    end
+    return nil
+end
+
+-- Open modem
+local modem = peripheral.find("modem") or error("No modem found!")
+rednet.open(peripheral.getName(modem))
+
+-- Create storage directories
+for _, dir in pairs({DIR_PAINT, DIR_AUDIO}) do
+    if not fs.exists(dir) then fs.makeDir(dir) end
+end
+
+-- Draw header
+term.clear()
+term.setTextColor(colors.orange)
+local w, h = term.getSize()
+local title = "PUNOS FILE SHARE SERVER v5.2"
+term.setCursorPos(math.floor((w - #title) / 2), 2)
+print(title)
+term.setCursorPos(1, 3)
+print(string.rep("=", w))
+term.setTextColor(colors.white)
+
+-- Load or create server ID config
+local serverID
+local configExists = fs.exists(CONFIG_FILE)
+
+if configExists then
+    local f = fs.open(CONFIG_FILE, "r")
+    serverID = f.readAll()
+    f.close()
+    print("")
+    term.setTextColor(colors.lime)
+    print("Loaded saved server ID: " .. serverID)
+else
+    print("")
+    print("Current computer ID: " .. os.getComputerID())
+    print("")
+    term.setTextColor(colors.yellow)
+    print("Set a custom server ID (text or numbers):")
+    term.setTextColor(colors.white)
+    serverID = read()
+
+    if serverID == "" then
+        serverID = tostring(os.getComputerID())
+        term.setTextColor(colors.gray)
+        print("Using default ID: " .. serverID)
+    else
+        term.setTextColor(colors.lime)
+        print("Custom ID set: " .. serverID)
+    end
+    term.setTextColor(colors.white)
+
+    local f = fs.open(CONFIG_FILE, "w")
+    f.write(serverID)
+    f.close()
+
+    -- Overwrite startup to run the server automatically
+    local startup = fs.open("startup.lua", "w")
+    startup.write('shell.run("/.server")')
+    startup.close()
+
+    term.setTextColor(colors.lime)
+    print("Configuration saved. Server will auto-start on reboot.")
+    term.setTextColor(colors.white)
+    sleep(2)
+end
+
+rednet.host(PROTOCOL, serverID)
+
+-- ---- File helpers ----
+
+local function loadFilesFromDisk(fileType)
+    local dir = dirForType(fileType)
+    local files = {}
+    if not fs.exists(dir) then return files end
+    for _, name in ipairs(fs.list(dir)) do
+        local metaPath = fs.combine(dir, name)
+        local f = fs.open(metaPath, "r")
+        local data = textutils.unserialize(f.readAll())
+        f.close()
+        if data then files[name] = data end
+    end
+    return files
+end
+
+local function saveFileToDisk(fileType, filename, fileData)
+    local path = fs.combine(dirForType(fileType), filename)
+    local f = fs.open(path, "w")
+    f.write(textutils.serialize(fileData))
+    f.close()
+end
+
+local function deleteFileFromDisk(fileType, filename)
+    local path = fs.combine(dirForType(fileType), filename)
+    if fs.exists(path) then fs.delete(path) end
+end
+
+-- Load both stores into memory at startup
+local stores = {
+    paint = loadFilesFromDisk("paint"),
+    audio = loadFilesFromDisk("audio")
+}
+
+local function countFiles(store)
+    local n = 0
+    for _ in pairs(store) do n = n + 1 end
+    return n
+end
+
+-- ---- Status screen ----
+term.clear()
+term.setTextColor(colors.orange)
+term.setCursorPos(math.floor((w - #title) / 2), 2)
+print(title)
+term.setCursorPos(1, 3)
+print(string.rep("=", w))
+
+term.setTextColor(colors.lime)
+term.setCursorPos(1, 5)
+print("STATUS: ONLINE")
+term.setTextColor(colors.white)
+print("Protocol : " .. PROTOCOL)
+print("Server ID: " .. serverID)
+term.setTextColor(colors.cyan)
+print("Paint files: " .. countFiles(stores.paint) ..
+      "  |  Audio files: " .. countFiles(stores.audio))
+term.setTextColor(colors.white)
+print("")
+term.setCursorPos(1, 11)
+print(string.rep("-", w))
+term.setTextColor(colors.yellow)
+print("Activity Log:")
+term.setTextColor(colors.white)
+print("")
+
+local logLine = 14
+
+local function log(color, msg)
+    if #msg > w then msg = msg:sub(1, w - 1) end
+    term.setTextColor(color)
+    term.setCursorPos(1, logLine)
+    print(msg)
+    term.setTextColor(colors.white)
+    logLine = logLine + 1
+    if logLine > h then
+        logLine = 14
+        term.scroll(1)
+    end
+end
+
+-- ---- Main server loop ----
+while true do
+    local senderID, message = rednet.receive(PROTOCOL)
+    if type(message) ~= "table" then goto continue end
+
+    local action   = message.action
+    local fileType = message.fileType   -- "paint" or "audio"
+
+    -- Validate fileType for actions that need it
+    if not stores[fileType] then
+        rednet.send(senderID, {success = false, message = "Invalid file type. Use 'paint' or 'audio'."}, PROTOCOL)
+        log(colors.red, "[INVALID TYPE] from ID:" .. senderID .. " action:" .. tostring(action))
+        goto continue
+    end
+
+    local store = stores[fileType]
+    local ext   = TYPE_EXT[fileType]
+
+    -- ---- UPLOAD ----
+    if action == "upload" then
+        local filename  = message.filename
+        local data      = message.data
+        local recipient = message.recipient
+
+        if not filename or not data then
+            rednet.send(senderID, {success = false, message = "Missing filename or data"}, PROTOCOL)
+
+        elseif filename:sub(-#ext) ~= ext then
+            -- Extension mismatch  hard reject
+            rednet.send(senderID, {
+                success = false,
+                message = "Wrong file type: " .. fileType .. " store only accepts " .. ext .. " files"
+            }, PROTOCOL)
+            log(colors.red, "[REJECTED] " .. filename .. "  wrong ext for " .. fileType .. " store")
+
+        else
+            local fileData = {
+                data      = data,
+                uploader  = senderID,
+                recipient = recipient,
+                fileType  = fileType,
+                timestamp = os.epoch("utc")
+            }
+            store[filename] = fileData
+            saveFileToDisk(fileType, filename, fileData)
+
+            local dest = recipient and ("for ID:" .. recipient) or "publicly"
+            log(colors.lime, "[UPLOAD:" .. fileType .. "] " .. filename .. " from " .. senderID .. " " .. dest)
+            rednet.send(senderID, {success = true, message = "File uploaded"}, PROTOCOL)
+        end
+
+    -- ---- DOWNLOAD ----
+    elseif action == "download" then
+        local filename = message.filename
+        local fileData = store[filename]
+
+        if not fileData then
+            rednet.send(senderID, {success = false, message = "File not found in " .. fileType .. " store"}, PROTOCOL)
+
+        elseif fileData.recipient and fileData.recipient ~= senderID then
+            log(colors.red, "[DENIED] " .. filename .. "  ID:" .. senderID .. " not authorised")
+            rednet.send(senderID, {success = false, message = "Access denied"}, PROTOCOL)
+
+        else
+            log(colors.cyan, "[DOWNLOAD:" .. fileType .. "] " .. filename .. "  ID:" .. senderID)
+            rednet.send(senderID, {
+                success  = true,
+                data     = fileData.data,
+                filename = filename
+            }, PROTOCOL)
+
+            if fileData.recipient then
+                store[filename] = nil
+                deleteFileFromDisk(fileType, filename)
+                log(colors.gray, "[REMOVED] " .. filename .. " (one-time download)")
+            else
+                log(colors.gray, "[KEPT] " .. filename .. " (public file)")
+            end
+        end
+
+    -- ---- LIST ----
+    elseif action == "list" then
+        local fileList = {}
+        for name, fileData in pairs(store) do
+            if not fileData.recipient or fileData.recipient == senderID then
+                table.insert(fileList, {
+                    name   = name,
+                    public = not fileData.recipient
+                })
+            end
+        end
+        log(colors.yellow, "[LIST:" .. fileType .. "] request from ID:" .. senderID)
+        rednet.send(senderID, {success = true, files = fileList}, PROTOCOL)
+
+    -- ---- DELETE ----
+    elseif action == "delete" then
+        local filename = message.filename
+        local fileData = store[filename]
+
+        if not fileData then
+            rednet.send(senderID, {success = false, message = "File not found"}, PROTOCOL)
+        elseif fileData.uploader ~= senderID then
+            rednet.send(senderID, {success = false, message = "Not authorised"}, PROTOCOL)
+        else
+            store[filename] = nil
+            deleteFileFromDisk(fileType, filename)
+            log(colors.orange, "[DELETE:" .. fileType .. "] " .. filename .. " by ID:" .. senderID)
+            rednet.send(senderID, {success = true, message = "File deleted"}, PROTOCOL)
+        end
+    end
+
+    ::continue::
+end

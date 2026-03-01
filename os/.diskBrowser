@@ -1,0 +1,458 @@
+-- PunOS Disk Browser
+-- Browse and run files from inserted disk drives
+
+os.pullEvent = os.pullEventRaw
+
+local w, h = term.getSize()
+
+local UI = dofile("/os/loadTheme.lua")
+
+-- ---- Layout ----
+local DRIVE_ROW   = 3
+local LIST_START  = 5
+local LIST_END    = h - 3
+local ACTIONS_ROW = h - 2
+local FOOTER_ROW  = h - 1
+local listHeight  = LIST_END - LIST_START + 1
+
+-- ---- State ----
+local drives      = {}   -- {name, label, path}
+local activeDrive = nil
+local files       = {}   -- flat list of {name, path, isDir}
+local currentPath = ""
+local selectedIdx = 1
+local scrollOff   = 0
+
+local driveButtons = {}
+local fileButtons  = {}
+local actionBtns   = {}
+
+-- ---- Helpers ----
+local function inRegion(r, mx, my)
+    return r and mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2
+end
+
+local function scanDrives()
+    drives = {}
+    for _, name in ipairs(peripheral.getNames()) do
+        if peripheral.getType(name) == "drive" then
+            local mountPath = disk.getMountPath(name)
+            if mountPath then
+                local label = disk.getLabel(name) or ("Disk (" .. name .. ")")
+                table.insert(drives, {
+                    name  = name,
+                    label = label,
+                    path  = mountPath
+                })
+            end
+        end
+    end
+end
+
+local function loadFiles(path)
+    files = {}
+    currentPath = path
+    selectedIdx = 1
+    scrollOff   = 0
+
+    if not fs.exists(path) then return end
+
+    -- Add ".." entry if we're in a subdirectory of the drive root
+    if activeDrive and path ~= activeDrive.path then
+        table.insert(files, {name = "..", path = fs.getDir(path), isDir = true})
+    end
+
+    local listing = fs.list(path)
+    table.sort(listing, function(a, b)
+        local aDir = fs.isDir(path .. "/" .. a)
+        local bDir = fs.isDir(path .. "/" .. b)
+        if aDir ~= bDir then return aDir end  -- dirs first
+        return a:lower() < b:lower()
+    end)
+
+    for _, name in ipairs(listing) do
+        local fullPath = path .. "/" .. name
+        table.insert(files, {
+            name  = name,
+            path  = fullPath,
+            isDir = fs.isDir(fullPath)
+        })
+    end
+end
+
+local function scrollTo(idx)
+    selectedIdx = math.max(1, math.min(#files, idx))
+    if selectedIdx - 1 < scrollOff then
+        scrollOff = selectedIdx - 1
+    elseif selectedIdx - 1 >= scrollOff + listHeight then
+        scrollOff = selectedIdx - listHeight
+    end
+end
+
+-- ---- Draw ----
+local function drawHeader()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1)
+    term.setTextColor(UI.primary)
+    term.write("PunOS")
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.subtext)
+    term.write("Disk Browser")
+    local info = "ID:" .. os.getComputerID()
+    term.setCursorPos(w - #info - 1, 2)
+    term.write(info)
+end
+
+local function drawDriveBar()
+    driveButtons = {}
+    paintutils.drawFilledBox(1, DRIVE_ROW, w, DRIVE_ROW, UI.border)
+    paintutils.drawFilledBox(1, DRIVE_ROW + 1, w, DRIVE_ROW + 1, UI.background)
+
+    if #drives == 0 then
+        term.setCursorPos(2, DRIVE_ROW)
+        term.setTextColor(UI.subtext)
+        term.write("No disks found. Insert a disk drive with a disk.")
+        return
+    end
+
+    local x = 2
+    for i, drive in ipairs(drives) do
+        local label = " " .. drive.label .. " "
+        if #label > 14 then label = label:sub(1, 13) .. " " end
+
+        local isActive = activeDrive and activeDrive.name == drive.name
+        paintutils.drawFilledBox(x, DRIVE_ROW, x + #label - 1, DRIVE_ROW,
+            isActive and UI.primary or UI.border)
+        term.setCursorPos(x, DRIVE_ROW)
+        term.setTextColor(isActive and UI.background or UI.text)
+        term.write(label)
+
+        driveButtons[i] = {x1 = x, y1 = DRIVE_ROW, x2 = x + #label - 1, y2 = DRIVE_ROW, drive = drive}
+        x = x + #label + 1
+        if x > w - 5 then break end
+    end
+
+    -- Current path display
+    if activeDrive then
+        term.setCursorPos(2, DRIVE_ROW + 1)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        local rel = currentPath:sub(#activeDrive.path + 1)
+        if rel == "" then rel = "/" end
+        local pathLine = drive and (activeDrive.label .. ":" .. rel) or rel
+        if #pathLine > w - 3 then pathLine = "..." .. pathLine:sub(-(w - 6)) end
+        term.write(pathLine)
+    end
+end
+
+local function drawFileList()
+    fileButtons = {}
+
+    for y = LIST_START, LIST_END do
+        term.setCursorPos(1, y)
+        term.setBackgroundColor(UI.background)
+        term.clearLine()
+    end
+
+    if #drives == 0 then return end
+
+    if not activeDrive then
+        term.setCursorPos(2, LIST_START + 1)
+        term.setTextColor(UI.subtext)
+        term.write("Select a disk above to browse it.")
+        return
+    end
+
+    if #files == 0 then
+        term.setCursorPos(2, LIST_START + 1)
+        term.setTextColor(UI.subtext)
+        term.write("(empty directory)")
+        return
+    end
+
+    for i = 1 + scrollOff, math.min(#files, listHeight + scrollOff) do
+        local y = LIST_START + (i - 1 - scrollOff)
+        if y > LIST_END then break end
+
+        local f = files[i]
+        if i == selectedIdx then
+            paintutils.drawFilledBox(1, y, w, y, UI.primary)
+            term.setTextColor(UI.background)
+        else
+            term.setBackgroundColor(UI.background)
+            term.setTextColor(f.isDir and UI.primary or UI.text)
+        end
+
+        term.setCursorPos(2, y)
+        local prefix = f.isDir and "[+] " or "    "
+        local name = f.name
+        if #prefix + #name > w - 2 then name = name:sub(1, w - #prefix - 5) .. "..." end
+        term.write(prefix .. name)
+
+        fileButtons[i] = {x1 = 1, y1 = y, x2 = w, y2 = y}
+    end
+
+    if scrollOff > 0 then
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.setCursorPos(w - 5, LIST_START)
+        term.write("[^ up]")
+    end
+    if scrollOff + listHeight < #files then
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.setCursorPos(w - 7, LIST_END)
+        term.write("[v more]")
+    end
+end
+
+local function drawActions()
+    actionBtns = {}
+    paintutils.drawFilledBox(1, ACTIONS_ROW - 1, w, ACTIONS_ROW - 1, UI.border)
+    term.setCursorPos(1, ACTIONS_ROW)
+    term.setBackgroundColor(UI.background)
+    term.clearLine()
+
+    local hasFile = activeDrive and #files > 0 and
+                    selectedIdx <= #files and not files[selectedIdx].isDir
+
+    local bx = 2
+    local function addBtn(label, key, enabled)
+        local bg = enabled and UI.border or UI.background
+        local fg = enabled and UI.text   or UI.subtext
+        local x1, x2 = bx, bx + #label - 1
+        paintutils.drawFilledBox(x1, ACTIONS_ROW, x2, ACTIONS_ROW, bg)
+        term.setCursorPos(x1, ACTIONS_ROW)
+        term.setTextColor(fg)
+        term.write(label)
+        if enabled then
+            actionBtns[key] = {x1 = x1, y1 = ACTIONS_ROW, x2 = x2, y2 = ACTIONS_ROW}
+        end
+        bx = bx + #label + 1
+    end
+
+    addBtn(" Run  ", "run",  hasFile)
+    addBtn(" Open ", "open", hasFile)
+
+    local backLabel = " Back "
+    local bkx = w - #backLabel
+    paintutils.drawFilledBox(bkx, ACTIONS_ROW, w, ACTIONS_ROW, UI.border)
+    term.setCursorPos(bkx, ACTIONS_ROW)
+    term.setTextColor(UI.text)
+    term.write(backLabel)
+    actionBtns["back"] = {x1 = bkx, y1 = ACTIONS_ROW, x2 = w, y2 = ACTIONS_ROW}
+
+    -- Refresh button
+    local refLabel = " Refresh "
+    local rfx = bkx - #refLabel - 1
+    paintutils.drawFilledBox(rfx, ACTIONS_ROW, rfx + #refLabel - 1, ACTIONS_ROW, UI.border)
+    term.setCursorPos(rfx, ACTIONS_ROW)
+    term.setTextColor(UI.text)
+    term.write(refLabel)
+    actionBtns["refresh"] = {x1 = rfx, y1 = ACTIONS_ROW, x2 = rfx + #refLabel - 1, y2 = ACTIONS_ROW}
+
+    -- Footer
+    term.setCursorPos(1, FOOTER_ROW)
+    term.setBackgroundColor(UI.background)
+    term.clearLine()
+    term.setCursorPos(2, FOOTER_ROW)
+    term.setTextColor(UI.subtext)
+    term.write("Up/Down: Select | Enter: Open/Run | Backspace: Back")
+end
+
+local function redraw()
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    drawHeader()
+    scanDrives()
+    drawDriveBar()
+    drawFileList()
+    drawActions()
+end
+
+-- ---- Actions ----
+local function openSelected()
+    if not activeDrive or #files == 0 then return end
+    local f = files[selectedIdx]
+    if f.isDir then
+        loadFiles(f.path)
+        drawDriveBar()
+        drawFileList()
+        drawActions()
+    end
+end
+
+local function runSelected()
+    if not activeDrive or #files == 0 then return end
+    local f = files[selectedIdx]
+    if f.isDir then openSelected(); return end
+
+    -- Detect file type and handle accordingly
+    local name = f.name:lower()
+    if name:sub(-4) == ".lua" or not name:find("%.") then
+        -- Lua script or no extension  run it
+        term.setBackgroundColor(colors.black)
+        term.clear()
+        term.setCursorPos(1, 1)
+        term.setTextColor(UI.primary)
+        print("Running: " .. f.name)
+        print("Press any key to return when done.")
+        print(string.rep("-", w))
+        term.setTextColor(UI.text)
+        shell.run(f.path)
+        print("")
+        term.setTextColor(UI.subtext)
+        print("Program ended. Press any key.")
+        os.pullEvent("key")
+        redraw()
+    elseif name:sub(-4) == ".nfp" then
+        shell.run("os/.paintViewer", f.path)
+        redraw()
+    elseif name:sub(-6) == ".dfpwm" then
+        shell.run("os/.audioPlayer", f.name)
+        redraw()
+    else
+        -- Unknown type  try running anyway
+        term.setBackgroundColor(colors.black)
+        term.clear()
+        term.setCursorPos(1, 1)
+        term.setTextColor(UI.primary)
+        print("Running: " .. f.name)
+        print(string.rep("-", w))
+        term.setTextColor(UI.text)
+        shell.run(f.path)
+        print("")
+        term.setTextColor(UI.subtext)
+        print("Done. Press any key.")
+        os.pullEvent("key")
+        redraw()
+    end
+end
+
+-- ---- Main loop ----
+scanDrives()
+if #drives > 0 then
+    activeDrive = drives[1]
+    loadFiles(activeDrive.path)
+end
+redraw()
+
+while true do
+    local e, p1, p2, p3 = os.pullEvent()
+
+    if e == "key" then
+        if p1 == keys.up or p1 == keys.w then
+            if selectedIdx > 1 then
+                scrollTo(selectedIdx - 1)
+                drawFileList()
+                drawActions()
+            end
+        elseif p1 == keys.down or p1 == keys.s then
+            if selectedIdx < #files then
+                scrollTo(selectedIdx + 1)
+                drawFileList()
+                drawActions()
+            end
+        elseif p1 == keys.enter then
+            if #files > 0 and files[selectedIdx].isDir then
+                openSelected()
+            else
+                runSelected()
+            end
+        elseif p1 == keys.backspace then
+            -- Go up a directory, or exit if at drive root
+            if activeDrive and currentPath ~= activeDrive.path then
+                loadFiles(fs.getDir(currentPath))
+                drawDriveBar()
+                drawFileList()
+                drawActions()
+            else
+                break
+            end
+        end
+
+    elseif e == "mouse_click" then
+        local mx, my = p2, p3
+
+        -- Drive bar click
+        local driveClicked = false
+        for _, r in ipairs(driveButtons) do
+            if inRegion(r, mx, my) then
+                activeDrive = r.drive
+                loadFiles(activeDrive.path)
+                drawDriveBar()
+                drawFileList()
+                drawActions()
+                driveClicked = true
+                break
+            end
+        end
+
+        if not driveClicked then
+            -- File list click
+            local fileClicked = false
+            for i, r in ipairs(fileButtons) do
+                if inRegion(r, mx, my) then
+                    if selectedIdx == i then
+                        -- Double-click behaviour on single click second tap
+                        if files[i].isDir then
+                            openSelected()
+                        else
+                            runSelected()
+                        end
+                    else
+                        scrollTo(i)
+                        drawFileList()
+                        drawActions()
+                    end
+                    fileClicked = true
+                    break
+                end
+            end
+
+            if not fileClicked then
+                if inRegion(actionBtns.run, mx, my) then
+                    runSelected()
+                elseif inRegion(actionBtns.open, mx, my) then
+                    if #files > 0 and files[selectedIdx].isDir then
+                        openSelected()
+                    else
+                        runSelected()
+                    end
+                elseif inRegion(actionBtns.refresh, mx, my) then
+                    scanDrives()
+                    if activeDrive then loadFiles(currentPath) end
+                    redraw()
+                elseif inRegion(actionBtns.back, mx, my) then
+                    break
+                end
+            end
+        end
+
+    elseif e == "mouse_scroll" then
+        local dir = p1
+        if dir == 1 and scrollOff + listHeight < #files then
+            scrollOff = scrollOff + 1
+            drawFileList()
+        elseif dir == -1 and scrollOff > 0 then
+            scrollOff = scrollOff - 1
+            drawFileList()
+        end
+
+    elseif e == "disk" or e == "disk_eject" then
+        -- Auto-refresh when a disk is inserted or removed
+        scanDrives()
+        if e == "disk_eject" and activeDrive and activeDrive.name == p1 then
+            activeDrive = #drives > 0 and drives[1] or nil
+            files = {}
+            currentPath = ""
+        end
+        if activeDrive and currentPath ~= "" then loadFiles(currentPath) end
+        redraw()
+    end
+end
+
+term.setBackgroundColor(colors.black)
+term.clear()
+term.setCursorPos(1, 1)
+shell.run("os/.programs")

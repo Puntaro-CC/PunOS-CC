@@ -1,0 +1,748 @@
+local api_base_url = "https://ipod-2to6magyna-uc.a.run.app/"
+local version = "2.1"
+
+local width, height = term.getSize()
+local tab = 1
+
+local UI = dofile("/os/loadTheme.lua")
+UI.selected = UI.text  -- compatibility alias
+
+local waiting_for_input = false
+local last_search = nil
+local last_search_url = nil
+local search_results = nil
+local search_error = false
+local in_search_result = false
+local clicked_result = nil
+
+local playing = false
+local queue = {}
+local now_playing = nil
+local looping = 0
+local volume = 1.5
+
+local playing_id = nil
+local last_download_url = nil
+local playing_status = 0
+local is_loading = false
+local is_error = false
+
+local player_handle = nil
+local start = nil
+local pcm = nil
+local size = nil
+local decoder = require "cc.audio.dfpwm".make_decoder()
+local needs_next_chunk = 0
+local buffer
+
+local speakers = { peripheral.find("speaker") }
+if #speakers == 0 then
+	error("No speakers attached. You need to connect a speaker to this computer.", 0)
+end
+
+-- Draw PunOS header
+local function drawHeader()
+    paintutils.drawFilledBox(1, 1, width, 2, UI.border)
+    term.setCursorPos(2, 1)
+    term.setTextColor(UI.primary)
+    term.write("PunOS")
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.subtext)
+    if tab == 1 then
+        term.write("Music - Now Playing")
+    else
+        term.write("Music - Search")
+    end
+end
+
+function redrawScreen()
+	if waiting_for_input then
+		return
+	end
+
+	term.setCursorBlink(false)
+	term.setBackgroundColor(UI.background)
+	term.clear()
+
+	drawHeader()
+
+	-- Draw tab indicators
+	term.setCursorPos(1, 3)
+	paintutils.drawFilledBox(1, 3, width, 3, UI.border)
+	
+	local tab1Text = "Now Playing"
+	local tab2Text = "Search"
+	local tab1Start = math.floor(width/4 - #tab1Text/2)
+	local tab2Start = math.floor(3*width/4 - #tab2Text/2)
+	
+	if tab == 1 then
+		term.setCursorPos(tab1Start, 3)
+		term.setTextColor(UI.primary)
+		term.write(tab1Text)
+		term.setCursorPos(tab2Start, 3)
+		term.setTextColor(UI.subtext)
+		term.write(tab2Text)
+	else
+		term.setCursorPos(tab1Start, 3)
+		term.setTextColor(UI.subtext)
+		term.write(tab1Text)
+		term.setCursorPos(tab2Start, 3)
+		term.setTextColor(UI.primary)
+		term.write(tab2Text)
+	end
+
+	if tab == 1 then
+		drawNowPlaying()
+	elseif tab == 2 then
+		drawSearch()
+	end
+end
+
+function drawNowPlaying()
+	-- Currently playing song info
+	if now_playing ~= nil then
+		term.setBackgroundColor(UI.background)
+		term.setTextColor(UI.text)
+		term.setCursorPos(2, 5)
+		term.write(now_playing.name)
+		term.setTextColor(UI.subtext)
+		term.setCursorPos(2, 6)
+		term.write(now_playing.artist)
+	else
+		term.setBackgroundColor(UI.background)
+		term.setTextColor(UI.subtext)
+		term.setCursorPos(2, 5)
+		term.write("Not playing")
+	end
+
+	-- Status messages
+	if is_loading == true then
+		term.setTextColor(UI.secondary)
+		term.setBackgroundColor(UI.background)
+		term.setCursorPos(2, 7)
+		term.write("Loading...")
+	elseif is_error == true then
+		term.setTextColor(colors.red)
+		term.setBackgroundColor(UI.background)
+		term.setCursorPos(2, 7)
+		term.write("Network error")
+	end
+
+	-- Control buttons
+	local btnY = 9
+	
+	-- Play/Stop button
+	if playing then
+		paintutils.drawFilledBox(2, btnY, 8, btnY, UI.primary)
+		term.setCursorPos(2, btnY)
+		term.setTextColor(UI.background)
+		term.write(" Stop ")
+	else
+		if now_playing ~= nil or #queue > 0 then
+			paintutils.drawFilledBox(2, btnY, 8, btnY, UI.border)
+			term.setCursorPos(2, btnY)
+			term.setTextColor(UI.text)
+			term.write(" Play ")
+		else
+			paintutils.drawFilledBox(2, btnY, 8, btnY, UI.border)
+			term.setCursorPos(2, btnY)
+			term.setTextColor(UI.subtext)
+			term.write(" Play ")
+		end
+	end
+
+	-- Skip button
+	if now_playing ~= nil or #queue > 0 then
+		paintutils.drawFilledBox(10, btnY, 16, btnY, UI.border)
+		term.setCursorPos(10, btnY)
+		term.setTextColor(UI.text)
+		term.write(" Skip ")
+	else
+		paintutils.drawFilledBox(10, btnY, 16, btnY, UI.border)
+		term.setCursorPos(10, btnY)
+		term.setTextColor(UI.subtext)
+		term.write(" Skip ")
+	end
+
+	-- Loop button
+	local loopBtnX = 18
+	if looping ~= 0 then
+		paintutils.drawFilledBox(loopBtnX, btnY, loopBtnX + 11, btnY, UI.primary)
+		term.setCursorPos(loopBtnX, btnY)
+		term.setTextColor(UI.background)
+	else
+		paintutils.drawFilledBox(loopBtnX, btnY, loopBtnX + 11, btnY, UI.border)
+		term.setCursorPos(loopBtnX, btnY)
+		term.setTextColor(UI.text)
+	end
+	
+	if looping == 0 then
+		term.write(" Loop Off  ")
+	elseif looping == 1 then
+		term.write(" Loop Queue")
+	else
+		term.write(" Loop Song ")
+	end
+	
+	-- Exit button
+	paintutils.drawFilledBox(31, btnY, 37, btnY, UI.border)
+	term.setCursorPos(31, btnY)
+	term.setTextColor(UI.text)
+	term.write(" Exit ")
+
+	-- Volume slider
+	term.setCursorPos(2, 11)
+	term.setTextColor(UI.primary)
+	term.write("Volume:")
+	
+	paintutils.drawBox(2, 12, 25, 12, UI.border)
+	local volWidth = math.floor(24 * (volume / 3) + 0.5) - 1
+	if volWidth >= 0 then
+		paintutils.drawFilledBox(2, 12, 2 + volWidth, 12, UI.primary)
+	end
+	
+	term.setCursorPos(27, 12)
+	term.setTextColor(UI.text)
+	term.write(math.floor(100 * (volume / 3) + 0.5) .. "%")
+
+	-- Queue
+	if #queue > 0 then
+		term.setBackgroundColor(UI.background)
+		term.setCursorPos(2, 14)
+		term.setTextColor(UI.primary)
+		term.write("Queue:")
+		
+		for i = 1, math.min(#queue, 3) do
+			term.setTextColor(UI.text)
+			term.setCursorPos(2, 14 + i * 2 - 1)
+			term.write(queue[i].name)
+			term.setTextColor(UI.subtext)
+			term.setCursorPos(2, 14 + i * 2)
+			term.write(queue[i].artist)
+		end
+		
+		if #queue > 3 then
+			term.setCursorPos(2, 14 + 7)
+			term.setTextColor(UI.subtext)
+			term.write("+" .. (#queue - 3) .. " more...")
+		end
+	end
+end
+
+function drawSearch()
+	-- Search bar
+	paintutils.drawFilledBox(2, 5, width - 1, 5, UI.border)
+	term.setBackgroundColor(UI.border)
+	term.setCursorPos(3, 5)
+	term.setTextColor(UI.text)
+	term.write(last_search or "Search...")
+
+	-- Search results
+	if search_results ~= nil then
+		term.setBackgroundColor(UI.background)
+		for i = 1, math.min(#search_results, 5) do
+			term.setTextColor(UI.text)
+			term.setCursorPos(2, 7 + (i - 1) * 2)
+			term.write(search_results[i].name)
+			term.setTextColor(UI.subtext)
+			term.setCursorPos(2, 8 + (i - 1) * 2)
+			term.write(search_results[i].artist)
+		end
+	else
+		term.setCursorPos(2, 7)
+		term.setBackgroundColor(UI.background)
+		if search_error == true then
+			term.setTextColor(colors.red)
+			term.write("Network error")
+		elseif last_search_url ~= nil then
+			term.setTextColor(UI.subtext)
+			term.write("Searching...")
+		else
+			term.setTextColor(UI.subtext)
+			term.write("Search for music or paste YouTube links")
+		end
+	end
+
+	-- Fullscreen song options
+	if in_search_result == true then
+		term.setBackgroundColor(UI.background)
+		term.clear()
+		drawHeader()
+		
+		term.setCursorPos(2, 4)
+		term.setTextColor(UI.text)
+		term.write(search_results[clicked_result].name)
+		term.setCursorPos(2, 5)
+		term.setTextColor(UI.subtext)
+		term.write(search_results[clicked_result].artist)
+
+		local options = {
+			{text = "Play now", y = 7},
+			{text = "Play next", y = 9},
+			{text = "Add to queue", y = 11},
+			{text = "Cancel", y = 14}
+		}
+
+		for _, opt in ipairs(options) do
+			paintutils.drawFilledBox(2, opt.y, 2 + #opt.text + 1, opt.y, UI.border)
+			term.setCursorPos(2, opt.y)
+			term.setTextColor(UI.text)
+			term.write(" " .. opt.text)
+		end
+	end
+end
+
+function uiLoop()
+	redrawScreen()
+
+	while true do
+		if waiting_for_input then
+			parallel.waitForAny(
+				function()
+					term.setCursorPos(3, 5)
+					term.setBackgroundColor(UI.primary)
+					term.setTextColor(UI.background)
+					term.clearLine()
+					local input = read()
+
+					if string.len(input) > 0 then
+						last_search = input
+						last_search_url = api_base_url .. "?v=" .. version .. "&search=" .. textutils.urlEncode(input)
+						http.request(last_search_url)
+						search_results = nil
+						search_error = false
+					else
+						last_search = nil
+						last_search_url = nil
+						search_results = nil
+						search_error = false
+					end
+
+					waiting_for_input = false
+					os.queueEvent("redraw_screen")
+				end,
+				function()
+					while waiting_for_input do
+						local event, button, x, y = os.pullEvent("mouse_click")
+						if y ~= 5 or x < 2 or x > width - 1 then
+							waiting_for_input = false
+							os.queueEvent("redraw_screen")
+							break
+						end
+					end
+				end
+			)
+		else
+			parallel.waitForAny(
+				function()
+					local event, button, x, y = os.pullEvent("mouse_click")
+
+					if button == 1 then
+						-- Tab switching
+						if in_search_result == false and y == 3 then
+							if x < width / 2 then
+								tab = 1
+							else
+								tab = 2
+							end
+							redrawScreen()
+						end
+						
+						if tab == 2 and in_search_result == false then
+							-- Search box click
+							if y == 5 and x >= 2 and x <= width - 1 then
+								paintutils.drawFilledBox(2, 5, width - 1, 5, UI.primary)
+								term.setBackgroundColor(UI.primary)
+								waiting_for_input = true
+							end
+		
+							-- Search result click
+							if search_results then
+								for i = 1, math.min(#search_results, 5) do
+									if y == 7 + (i - 1) * 2 or y == 8 + (i - 1) * 2 then
+										term.setBackgroundColor(UI.primary)
+										term.setTextColor(UI.background)
+										term.setCursorPos(2, 7 + (i - 1) * 2)
+										term.clearLine()
+										term.write(search_results[i].name)
+										term.setTextColor(UI.subtext)
+										term.setCursorPos(2, 8 + (i - 1) * 2)
+										term.clearLine()
+										term.write(search_results[i].artist)
+										sleep(0.2)
+										in_search_result = true
+										clicked_result = i
+										redrawScreen()
+									end
+								end
+							end
+						elseif tab == 2 and in_search_result == true then
+							-- Search result menu clicks
+							term.setBackgroundColor(UI.primary)
+							term.setTextColor(UI.background)
+		
+							if y == 7 then
+								term.setCursorPos(2, 7)
+								term.write(" Play now")
+								sleep(0.2)
+								in_search_result = false
+								for _, speaker in ipairs(speakers) do
+									speaker.stop()
+									os.queueEvent("playback_stopped")
+								end
+								playing = true
+								is_error = false
+								playing_id = nil
+								if search_results[clicked_result].type == "playlist" then
+									now_playing = search_results[clicked_result].playlist_items[1]
+									queue = {}
+									if #search_results[clicked_result].playlist_items > 1 then
+										for i = 2, #search_results[clicked_result].playlist_items do
+											table.insert(queue, search_results[clicked_result].playlist_items[i])
+										end
+									end
+								else
+									now_playing = search_results[clicked_result]
+								end
+								os.queueEvent("audio_update")
+							end
+		
+							if y == 9 then
+								term.setCursorPos(2, 9)
+								term.write(" Play next")
+								sleep(0.2)
+								in_search_result = false
+								if search_results[clicked_result].type == "playlist" then
+									for i = #search_results[clicked_result].playlist_items, 1, -1 do
+										table.insert(queue, 1, search_results[clicked_result].playlist_items[i])
+									end
+								else
+									table.insert(queue, 1, search_results[clicked_result])
+								end
+								os.queueEvent("audio_update")
+							end
+		
+							if y == 11 then
+								term.setCursorPos(2, 11)
+								term.write(" Add to queue")
+								sleep(0.2)
+								in_search_result = false
+								if search_results[clicked_result].type == "playlist" then
+									for i = 1, #search_results[clicked_result].playlist_items do
+										table.insert(queue, search_results[clicked_result].playlist_items[i])
+									end
+								else
+									table.insert(queue, search_results[clicked_result])
+								end
+								os.queueEvent("audio_update")
+							end
+		
+							if y == 14 then
+								term.setCursorPos(2, 14)
+								term.write(" Cancel")
+								sleep(0.2)
+								in_search_result = false
+							end
+		
+							redrawScreen()
+						elseif tab == 1 and in_search_result == false then
+							-- Now playing tab clicks
+							local btnY = 9
+		
+							if y == btnY then
+								-- Play/stop button
+								if x >= 2 and x <= 8 then
+									if playing or now_playing ~= nil or #queue > 0 then
+										paintutils.drawFilledBox(2, btnY, 8, btnY, UI.primary)
+										term.setTextColor(UI.background)
+										term.setCursorPos(2, btnY)
+										if playing then
+											term.write(" Stop ")
+										else 
+											term.write(" Play ")
+										end
+										sleep(0.2)
+									end
+									if playing then
+										playing = false
+										for _, speaker in ipairs(speakers) do
+											speaker.stop()
+											os.queueEvent("playback_stopped")
+										end
+										playing_id = nil
+										is_loading = false
+										is_error = false
+										os.queueEvent("audio_update")
+									elseif now_playing ~= nil then
+										playing_id = nil
+										playing = true
+										is_error = false
+										os.queueEvent("audio_update")
+									elseif #queue > 0 then
+										now_playing = queue[1]
+										table.remove(queue, 1)
+										playing_id = nil
+										playing = true
+										is_error = false
+										os.queueEvent("audio_update")
+									end
+								end
+		
+								-- Skip button
+								if x >= 10 and x <= 16 then
+									if now_playing ~= nil or #queue > 0 then
+										paintutils.drawFilledBox(10, btnY, 16, btnY, UI.primary)
+										term.setTextColor(UI.background)
+										term.setCursorPos(10, btnY)
+										term.write(" Skip ")
+										sleep(0.2)
+		
+										is_error = false
+										if playing then
+											for _, speaker in ipairs(speakers) do
+												speaker.stop()
+												os.queueEvent("playback_stopped")
+											end
+										end
+										if #queue > 0 then
+											if looping == 1 then
+												table.insert(queue, now_playing)
+											end
+											now_playing = queue[1]
+											table.remove(queue, 1)
+											playing_id = nil
+										else
+											now_playing = nil
+											playing = false
+											is_loading = false
+											is_error = false
+											playing_id = nil
+										end
+										os.queueEvent("audio_update")
+									end
+								end
+		
+								-- Loop button
+								if x >= 18 and x <= 29 then
+									if looping == 0 then
+										looping = 1
+									elseif looping == 1 then
+										looping = 2
+									else
+										looping = 0
+									end
+								end
+								
+								-- Exit button
+								if x >= 31 and x <= 37 then
+									paintutils.drawFilledBox(31, btnY, 37, btnY, UI.primary)
+									term.setTextColor(UI.background)
+									term.setCursorPos(31, btnY)
+									term.write(" Exit ")
+									sleep(0.2)
+									
+									-- Stop playback
+									playing = false
+									for _, speaker in ipairs(speakers) do
+										speaker.stop()
+									end
+									
+									-- Clear and exit
+									term.setBackgroundColor(colors.black)
+									term.clear()
+									term.setCursorPos(1, 1)
+									shell.run("os/.programs")
+									return
+								end
+							end
+
+							if y == 12 then
+								-- Volume slider
+								if x >= 2 and x <= 25 then
+									volume = (x - 1) / 24 * 3
+								end
+							end
+
+							redrawScreen()
+						end
+					end
+				end,
+				function()
+					local event, button, x, y = os.pullEvent("mouse_drag")
+
+					if button == 1 and tab == 1 and in_search_result == false then
+						if y == 12 then
+							-- Volume slider drag
+							if x >= 2 and x <= 25 then
+								volume = (x - 1) / 24 * 3
+								redrawScreen()
+							end
+						end
+					end
+				end,
+				function()
+					local event = os.pullEvent("redraw_screen")
+					redrawScreen()
+				end
+			)
+		end
+	end
+end
+
+function audioLoop()
+	while true do
+		-- AUDIO
+		if playing and now_playing then
+			local thisnowplayingid = now_playing.id
+			if playing_id ~= thisnowplayingid then
+				playing_id = thisnowplayingid
+				last_download_url = api_base_url .. "?v=" .. version .. "&id=" .. textutils.urlEncode(playing_id)
+				playing_status = 0
+				needs_next_chunk = 1
+
+				http.request({url = last_download_url, binary = true})
+				is_loading = true
+
+				os.queueEvent("redraw_screen")
+				os.queueEvent("audio_update")
+			elseif playing_status == 1 and needs_next_chunk == 1 then
+
+				while true do
+					local chunk = player_handle.read(size)
+					if not chunk then
+						if looping == 2 or (looping == 1 and #queue == 0) then
+							playing_id = nil
+						elseif looping == 1 and #queue > 0 then
+							table.insert(queue, now_playing)
+							now_playing = queue[1]
+							table.remove(queue, 1)
+							playing_id = nil
+						else
+							if #queue > 0 then
+								now_playing = queue[1]
+								table.remove(queue, 1)
+								playing_id = nil
+							else
+								now_playing = nil
+								playing = false
+								playing_id = nil
+								is_loading = false
+								is_error = false
+							end
+						end
+
+						os.queueEvent("redraw_screen")
+
+						player_handle.close()
+						needs_next_chunk = 0
+						break
+					else
+						if start then
+							chunk, start = start .. chunk, nil
+							size = size + 4
+						end
+				
+						buffer = decoder(chunk)
+						
+						local fn = {}
+						for i, speaker in ipairs(speakers) do 
+							fn[i] = function()
+								local name = peripheral.getName(speaker)
+								if #speakers > 1 then
+									if speaker.playAudio(buffer, volume) then
+										parallel.waitForAny(
+											function()
+												repeat until select(2, os.pullEvent("speaker_audio_empty")) == name
+											end,
+											function()
+												local event = os.pullEvent("playback_stopped")
+												return
+											end
+										)
+										if not playing or playing_id ~= thisnowplayingid then
+											return
+										end
+									end
+								else
+									while not speaker.playAudio(buffer, volume) do
+										parallel.waitForAny(
+											function()
+												repeat until select(2, os.pullEvent("speaker_audio_empty")) == name
+											end,
+											function()
+												local event = os.pullEvent("playback_stopped")
+												return
+											end
+										)
+										if not playing or playing_id ~= thisnowplayingid then
+											return
+										end
+									end
+								end
+								if not playing or playing_id ~= thisnowplayingid then
+									return
+								end
+							end
+						end
+						
+						local ok, err = pcall(parallel.waitForAll, table.unpack(fn))
+						if not ok then
+							needs_next_chunk = 2
+							is_error = true
+							break
+						end
+						
+						if not playing or playing_id ~= thisnowplayingid then
+							break
+						end
+					end
+				end
+				os.queueEvent("audio_update")
+			end
+		end
+
+		os.pullEvent("audio_update")
+	end
+end
+
+function httpLoop()
+	while true do
+		parallel.waitForAny(
+			function()
+				local event, url, handle = os.pullEvent("http_success")
+
+				if url == last_search_url then
+					search_results = textutils.unserialiseJSON(handle.readAll())
+					os.queueEvent("redraw_screen")
+				end
+				if url == last_download_url then
+					is_loading = false
+					player_handle = handle
+					start = handle.read(4)
+					size = 16 * 1024 - 4
+					playing_status = 1
+					os.queueEvent("redraw_screen")
+					os.queueEvent("audio_update")
+				end
+			end,
+			function()
+				local event, url = os.pullEvent("http_failure")	
+
+				if url == last_search_url then
+					search_error = true
+					os.queueEvent("redraw_screen")
+				end
+				if url == last_download_url then
+					is_loading = false
+					is_error = true
+					playing = false
+					playing_id = nil
+					os.queueEvent("redraw_screen")
+					os.queueEvent("audio_update")
+				end
+			end
+		)
+	end
+end
+
+parallel.waitForAny(uiLoop, audioLoop, httpLoop)

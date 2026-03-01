@@ -1,0 +1,389 @@
+-- PunOS Calculator
+-- Scientific calculator with integration and differentiation
+
+os.pullEvent = os.pullEventRaw
+
+local w, h = term.getSize()
+
+local UI = dofile("/os/loadTheme.lua")
+
+-- ---- State ----
+local display    = ""
+local result     = ""
+local history    = {}
+local histScroll = 0
+local buttons    = {}
+
+-- ---- Layout ----
+-- Header     : rows 1-2
+-- Last result: row 3  (single scrollable history line)
+-- Expression : row 4
+-- Result     : row 5
+-- Buttons    : rows 6..h  (7 rows  2 lines each = 14, fits on 19-row terminal)
+local HIST_ROW  = 3
+local DISP_ROW  = 4
+local RES_ROW   = 5
+local BTN_START = 6
+-- Each button row is 1 char tall, with 1-char gap  spacing = 2
+-- 7 rows  2 - 1 gap at end = 13 rows needed  rows 6-18, row 19 spare (fine)
+
+-- ---- Draw helpers ----
+local function drawHeader()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1)
+    term.setTextColor(UI.primary)
+    term.write("PunOS  Calculator")
+    local info = "ID:" .. os.getComputerID()
+    term.setCursorPos(w - #info - 1, 2)
+    term.setTextColor(UI.subtext)
+    term.write(info)
+end
+
+local function drawHistory()
+    term.setCursorPos(1, HIST_ROW)
+    term.setBackgroundColor(UI.background)
+    term.clearLine()
+    if #history > 0 then
+        local line = history[#history - histScroll] or ""
+        term.setCursorPos(2, HIST_ROW)
+        term.setTextColor(UI.subtext)
+        if #line > w - 2 then line = "..." .. line:sub(-(w - 5)) end
+        term.write(line)
+    end
+end
+
+local function drawDisplay()
+    paintutils.drawFilledBox(1, DISP_ROW, w, DISP_ROW, UI.border)
+    term.setCursorPos(2, DISP_ROW)
+    term.setTextColor(UI.text)
+    local expr = display
+    if #expr > w - 2 then expr = "..." .. expr:sub(-(w - 5)) end
+    term.write(expr)
+
+    paintutils.drawFilledBox(1, RES_ROW, w, RES_ROW, UI.border)
+    term.setCursorPos(2, RES_ROW)
+    if result:sub(1, 5) == "Error" then
+        term.setTextColor(colors.red)
+    else
+        term.setTextColor(UI.primary)
+    end
+    local res = result
+    if #res > w - 2 then res = res:sub(1, w - 5) .. "..." end
+    term.write(res)
+end
+
+local function drawBtn(x, y, bw, label, key, bg, fg)
+    paintutils.drawFilledBox(x, y, x + bw - 1, y, bg)
+    local lx = x + math.floor((bw - #label) / 2)
+    term.setCursorPos(lx, y)
+    term.setTextColor(fg)
+    term.write(label)
+    buttons[key] = {x1 = x, y1 = y, x2 = x + bw - 1, y2 = y}
+end
+
+local function drawButtons()
+    buttons = {}
+
+    local cols = 5
+    local bw   = math.floor((w - 1) / cols)
+    local x0   = 1
+    local gap  = 2   -- rows between button tops
+
+    local rows = {
+        -- row 0: CLR  DEL  (  )  ^
+        {
+            {label="CLR",  key="clear",       bg=UI.btnClear, fg=UI.text},
+            {label="DEL",  key="del",         bg=UI.btnSpec,  fg=UI.fgDark},
+            {label="(",    key="(",           bg=UI.btnOp,    fg=UI.fgDark},
+            {label=")",    key=")",           bg=UI.btnOp,    fg=UI.fgDark},
+            {label="^",    key="^",           bg=UI.btnOp,    fg=UI.fgDark},
+        },
+        -- row 1: sin  cos  tan  sqrt  pi
+        {
+            {label="sin",  key="sin(",        bg=UI.btnFn,    fg=UI.text},
+            {label="cos",  key="cos(",        bg=UI.btnFn,    fg=UI.text},
+            {label="tan",  key="tan(",        bg=UI.btnFn,    fg=UI.text},
+            {label="sqrt", key="sqrt(",       bg=UI.btnFn,    fg=UI.text},
+            {label="pi",   key="pi",          bg=UI.btnFn,    fg=UI.text},
+        },
+        -- row 2: log  ln  abs  e  %
+        {
+            {label="log",  key="log(",        bg=UI.btnFn,    fg=UI.text},
+            {label="ln",   key="math.log(",   bg=UI.btnFn,    fg=UI.text},
+            {label="abs",  key="math.abs(",   bg=UI.btnFn,    fg=UI.text},
+            {label="e",    key="e",           bg=UI.btnFn,    fg=UI.text},
+            {label="%",    key="%",           bg=UI.btnOp,    fg=UI.fgDark},
+        },
+        -- row 3: 7  8  9  /  intg
+        {
+            {label="7",    key="7",           bg=UI.btnNum,   fg=UI.text},
+            {label="8",    key="8",           bg=UI.btnNum,   fg=UI.text},
+            {label="9",    key="9",           bg=UI.btnNum,   fg=UI.text},
+            {label="/",    key="/",           bg=UI.btnOp,    fg=UI.fgDark},
+            {label="intg", key="intg",        bg=UI.btnSpec,  fg=UI.fgDark},
+        },
+        -- row 4: 4  5  6  *  diff
+        {
+            {label="4",    key="4",           bg=UI.btnNum,   fg=UI.text},
+            {label="5",    key="5",           bg=UI.btnNum,   fg=UI.text},
+            {label="6",    key="6",           bg=UI.btnNum,   fg=UI.text},
+            {label="*",    key="*",           bg=UI.btnOp,    fg=UI.fgDark},
+            {label="diff", key="diff",        bg=UI.btnSpec,  fg=UI.fgDark},
+        },
+        -- row 5: 1  2  3  -  Back
+        {
+            {label="1",    key="1",           bg=UI.btnNum,   fg=UI.text},
+            {label="2",    key="2",           bg=UI.btnNum,   fg=UI.text},
+            {label="3",    key="3",           bg=UI.btnNum,   fg=UI.text},
+            {label="-",    key="-",           bg=UI.btnOp,    fg=UI.fgDark},
+            {label="Back", key="back",        bg=UI.border,   fg=UI.text},
+        },
+        -- row 6: 0  .  =  +  (spare)
+        {
+            {label="0",    key="0",           bg=UI.btnNum,   fg=UI.text},
+            {label=".",    key=".",           bg=UI.btnNum,   fg=UI.text},
+            {label="=",    key="=",           bg=UI.btnEqual, fg=UI.fgDark},
+            {label="+",    key="+",           bg=UI.btnOp,    fg=UI.fgDark},
+            {label="Hist", key="hist",        bg=UI.border,   fg=UI.text},
+        },
+    }
+
+    for r, row in ipairs(rows) do
+        local y = BTN_START + (r - 1) * gap
+        if y > h then break end
+        for c, btn in ipairs(row) do
+            local x = x0 + (c - 1) * bw
+            drawBtn(x, y, bw, btn.label, btn.key, btn.bg, btn.fg)
+        end
+    end
+end
+
+local function redraw()
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    drawHeader()
+    drawHistory()
+    drawDisplay()
+    drawButtons()
+end
+
+-- ---- Evaluation ----
+local function safeEval(expr)
+    local e = expr
+    e = e:gsub("pi",        tostring(math.pi))
+    e = e:gsub("([^a-z])e([^a-z])", "%1" .. tostring(math.exp(1)) .. "%2")
+    e = e:gsub("^e([^a-z])",        tostring(math.exp(1)) .. "%1")
+    e = e:gsub("([^a-z])e$",        "%1" .. tostring(math.exp(1)))
+    e = e:gsub("^e$",               tostring(math.exp(1)))
+    e = e:gsub("sin",   "math.sin")
+    e = e:gsub("cos",   "math.cos")
+    e = e:gsub("tan",   "math.tan")
+    e = e:gsub("sqrt",  "math.sqrt")
+    e = e:gsub("log%(", "math.log10(")
+    local fn, err = load("return " .. e)
+    if not fn then return nil, err end
+    local ok, val = pcall(fn)
+    if not ok then return nil, tostring(val) end
+    return val, nil
+end
+
+local function fmt(n)
+    if type(n) ~= "number" then return tostring(n) end
+    if n == math.floor(n) and math.abs(n) < 1e12 then
+        return tostring(math.floor(n))
+    end
+    return string.format("%.8g", n)
+end
+
+local function integrate(exprStr, a, b)
+    local n = 1000
+    if n % 2 ~= 0 then n = n + 1 end
+    local fn, err = load("local x = ...; return " .. exprStr)
+    if not fn then return nil, "Bad expression: " .. (err or "") end
+    local h2 = (b - a) / n
+    local ok, fa = pcall(fn, a)
+    local ok2, fb = pcall(fn, b)
+    if not ok or not ok2 then return nil, "Evaluation error" end
+    local sum = fa + fb
+    for i = 1, n - 1 do
+        local xi = a + i * h2
+        local ok3, fi = pcall(fn, xi)
+        if not ok3 then return nil, "Evaluation error at x=" .. xi end
+        sum = sum + (i % 2 == 0 and 2 or 4) * fi
+    end
+    return (h2 / 3) * sum, nil
+end
+
+local function differentiate(exprStr, x)
+    local fn, err = load("local x = ...; return " .. exprStr)
+    if not fn then return nil, "Bad expression: " .. (err or "") end
+    local dx = 1e-5
+    local ok1, fp = pcall(fn, x + dx)
+    local ok2, fm = pcall(fn, x - dx)
+    if not ok1 or not ok2 then return nil, "Evaluation error" end
+    return (fp - fm) / (2 * dx), nil
+end
+
+-- ---- Input dialog ----
+local function inputDialog(lines)
+    local boxH = #lines * 2 + 3
+    local boxW = math.min(w - 4, 36)
+    local bx   = math.floor((w - boxW) / 2)
+    local by   = math.floor((h - boxH) / 2)
+
+    paintutils.drawFilledBox(bx, by, bx + boxW, by + boxH, UI.border)
+    paintutils.drawFilledBox(bx + 1, by + 1, bx + boxW - 1, by + boxH - 1, UI.background)
+
+    local results = {}
+    for i, item in ipairs(lines) do
+        local y = by + 1 + (i - 1) * 2
+        term.setCursorPos(bx + 2, y)
+        term.setTextColor(UI.primary)
+        term.write(item.label)
+        term.setCursorPos(bx + 2, y + 1)
+        term.setBackgroundColor(UI.border)
+        term.setTextColor(UI.text)
+        term.write(string.rep(" ", boxW - 3))
+        term.setCursorPos(bx + 2, y + 1)
+        local val = read(nil, nil, nil, item.default or "")
+        if val == nil or val == "" then return nil end
+        table.insert(results, val)
+    end
+    return results
+end
+
+-- ---- Key handler ----
+local function handleKey(key)
+    if key == "clear" then
+        display = ""; result = ""
+
+    elseif key == "del" then
+        display = display:sub(1, -2); result = ""
+
+    elseif key == "=" then
+        if display == "" then return end
+        local val, err = safeEval(display)
+        if err then
+            result = "Error: " .. err
+        else
+            result = fmt(val)
+            table.insert(history, display .. " = " .. result)
+        end
+
+    elseif key == "back" then
+        return "exit"
+
+    elseif key == "hist" then
+        if histScroll < #history - 1 then histScroll = histScroll + 1 end
+
+    elseif key == "intg" then
+        redraw()
+        local vals = inputDialog({
+            {label = "f(x) =",       default = display ~= "" and display or "x^2"},
+            {label = "Lower bound:", default = "0"},
+            {label = "Upper bound:", default = "1"},
+        })
+        if vals then
+            local a, b = tonumber(vals[2]), tonumber(vals[3])
+            if not a or not b then
+                result = "Error: bounds must be numbers"
+            else
+                local val, err = integrate(vals[1], a, b)
+                if err then
+                    result = "Error: " .. err
+                else
+                    display = "intg(" .. vals[1] .. ")[" .. vals[2] .. "," .. vals[3] .. "]"
+                    result = fmt(val)
+                    table.insert(history, display .. " = " .. result)
+                end
+            end
+        end
+
+    elseif key == "diff" then
+        redraw()
+        local vals = inputDialog({
+            {label = "f(x) =", default = display ~= "" and display or "x^2"},
+            {label = "at x =", default = "1"},
+        })
+        if vals then
+            local x = tonumber(vals[2])
+            if not x then
+                result = "Error: x must be a number"
+            else
+                local val, err = differentiate(vals[1], x)
+                if err then
+                    result = "Error: " .. err
+                else
+                    display = "d/dx(" .. vals[1] .. ") at " .. vals[2]
+                    result = fmt(val)
+                    table.insert(history, display .. " = " .. result)
+                end
+            end
+        end
+
+    elseif key == "pi" then
+        display = display .. "pi"
+    elseif key == "e" then
+        display = display .. "e"
+    else
+        display = display .. key
+        result  = ""
+    end
+end
+
+-- ---- Main loop ----
+redraw()
+
+while true do
+    local e, p1, p2, p3 = os.pullEvent()
+
+    if e == "mouse_click" then
+        local mx, my = p2, p3
+        for key, r in pairs(buttons) do
+            if mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2 then
+                local action = handleKey(key)
+                if action == "exit" then
+                    term.setBackgroundColor(colors.black)
+                    term.clear()
+                    term.setCursorPos(1, 1)
+                    shell.run("os/.programs")
+                    return
+                end
+                break
+            end
+        end
+        redraw()
+
+    elseif e == "key" then
+        if p1 == keys.backspace then
+            handleKey("del"); redraw()
+        elseif p1 == keys.enter then
+            local action = handleKey("=")
+            if action == "exit" then
+                term.setBackgroundColor(colors.black)
+                term.clear()
+                term.setCursorPos(1, 1)
+                shell.run("os/.programs")
+                return
+            end
+            redraw()
+        end
+
+    elseif e == "char" then
+        local allowed = "0123456789+-*/.^()"
+        if allowed:find(p1, 1, true) then
+            display = display .. p1
+            result  = ""
+            redraw()
+        end
+
+    elseif e == "mouse_scroll" then
+        if p1 == -1 and histScroll + 1 <= #history - 1 then
+            histScroll = histScroll + 1
+            drawHistory()
+        elseif p1 == 1 and histScroll > 0 then
+            histScroll = histScroll - 1
+            drawHistory()
+        end
+    end
+end
