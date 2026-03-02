@@ -40,7 +40,7 @@ local FILES = {
     {"os/.command",          "/os/.command"},
     {".server",              "/.server"},
     {"os/.ChatApp",          "/os/.ChatApp"},
-    {"/audio",               "/audio"},
+    {"audio",               "/audio"},
 }
 
 -- ---- Helpers ----------------------------------------------------------------
