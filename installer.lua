@@ -1,7 +1,9 @@
 -- PunOS Installer
 -- Run via: pastebin run <id>
 
-local RAW_BASE = "https://raw.githubusercontent.com/Puntaro-CC/PunOS-CC/main/"
+local RAW_BASE    = "https://raw.githubusercontent.com/Puntaro-CC/PunOS-CC/main/"
+local FILES_URL   = RAW_BASE .. "files.json"
+local VERSION_URL = RAW_BASE .. "version.json"
 local w, h = term.getSize()
 
 local function centered(y, text, color)
@@ -19,47 +21,24 @@ local function httpGet(url)
 end
 
 local function httpGetBinary(url)
-    local ok, res = pcall(http.get, url, nil, true)  -- true = binary mode
+    local ok, res = pcall(http.get, url, nil, true)
     if not ok or not res then return nil end
     local body = res.readAll()
     res.close()
     return body
 end
 
--- Files to download: {repo path, local path}
-local FILES = {
-    {"startup.lua",          "/startup.lua"},
-    {".menu",                "/.menu"},
-    {"publicChat.lua",       "/publicChat.lua"},
-    {"uninstall.lua",        "/uninstall.lua"},
-    {"back.lua",             "/back.lua"},
-    {"os/theme.lua",         "/os/theme.lua"},
-    {"os/loadTheme.lua",     "/os/loadTheme.lua"},
-    {"os/.programs",         "/os/.programs"},
-    {"os/.audioPlayer",      "/os/.audioPlayer"},
-    {"os/.calculator",       "/os/.calculator"},
-    {"os/.choosePaint",      "/os/.choosePaint"},
-    {"os/.diskBrowser",      "/os/.diskBrowser"},
-    {"os/.doom",             "/os/.doom"},
-    {"os/.download",         "/os/.download"},
-    {"os/.fileManager",      "/os/.fileManager"},
-    {"os/.fileShare",        "/os/.fileShare"},
-    {"os/.music",            "/os/.music"},
-    {"os/.paintOpen",        "/os/.paintOpen"},
-    {"os/.paintViewer",      "/os/.paintViewer"},
-    {"os/.settings",         "/os/.settings"},
-    {"os/.tetris",           "/os/.tetris"},
-    {"os/.UninstallDialog",  "/os/.UninstallDialog"},
-    {"os/.upload",           "/os/.upload"},
-    {"os/.updater",          "/os/.updater"},
-    {"os/.command",          "/os/.command"},
-    {".server",              "/.server"},
-    {"os/.ChatApp",          "/os/.ChatApp"},
-    {"audio/11_59_Naktigonis.dfpwm",  "/audio/11_59_Naktigonis.dfpwm"},
-    {"audio/Devils_Never_Cry.dfpwm",  "/audio/Devils_Never_Cry.dfpwm"},
-    {"audio/Judas_MetalRemix.dfpwm",  "/audio/Judas_MetalRemix.dfpwm"},
-    {"audio/worm_switch.dfpwm",       "/audio/worm_switch.dfpwm"},
-}
+-- Parse files.json into ordered list of {repoPath, localPath}
+local function parseFiles(json)
+    local files = {}
+    for repoPath, localPath in json:gmatch('"([^"]+)"%s*:%s*"([^"]+)"') do
+        -- Skip the outer "files" key itself
+        if repoPath ~= "files" then
+            table.insert(files, {repoPath, localPath})
+        end
+    end
+    return files
+end
 
 -- ---- Intro screen -----------------------------------------------------------
 
@@ -73,19 +52,14 @@ centered(5,  " |  __/| |_| | |\\  | |_| |___) |", colors.orange)
 centered(6,  " |_|    \\___/|_| \\_|\\___/|____/ ", colors.orange)
 centered(8,  "PunOS Installer",                    colors.white)
 centered(9,  "github.com/Puntaro-CC/PunOS-CC",     colors.lightGray)
-
 centered(11, "This will install PunOS on this computer.", colors.white)
 centered(12, "Any existing startup.lua will be replaced.", colors.lightGray)
-
--- Confirm prompt
-local confirmY = 14
-centered(confirmY, "Press Enter to install, or Ctrl+T to cancel.", colors.lightGray)
+centered(14, "Press Enter to install, or Ctrl+T to cancel.", colors.lightGray)
 
 term.setCursorPos(1, h)
 term.setTextColor(colors.gray)
 term.write("Requires HTTP access.")
 
--- Wait for enter
 while true do
     local e, p = os.pullEvent("key")
     if p == keys.enter then break end
@@ -107,12 +81,14 @@ if not http then
     term.write("HTTP is not enabled on this computer.")
     term.setCursorPos(2, 8)
     term.setTextColor(colors.lightGray)
-    term.write("Enable it in the CC config and try again.")
+    term.write("Enable it in CC config and try again.")
     return
 end
 
-local test = httpGet(RAW_BASE .. "version.json")
-if not test then
+-- ---- Fetch version and file list --------------------------------------------
+
+local verBody = httpGet(VERSION_URL)
+if not verBody then
     term.setCursorPos(2, 7)
     term.setTextColor(colors.red)
     term.write("Could not reach GitHub.")
@@ -122,23 +98,45 @@ if not test then
     return
 end
 
-local remoteVersion = test:match('"version"%s*:%s*"([^"]*)"') or "unknown"
+local remoteVersion = verBody:match('"version"%s*:%s*"([^"]*)"') or "unknown"
 
 term.setCursorPos(2, 5)
 term.setTextColor(colors.lime)
 term.write("Connection OK.          ")
 
--- ---- Create directories -----------------------------------------------------
+term.setCursorPos(2, 6)
+term.setTextColor(colors.lightGray)
+term.write("Fetching file list...")
+
+local filesBody = httpGet(FILES_URL)
+if not filesBody then
+    term.setCursorPos(2, 7)
+    term.setTextColor(colors.red)
+    term.write("Could not fetch files.json from repo.")
+    return
+end
+
+local FILES = parseFiles(filesBody)
+if #FILES == 0 then
+    term.setCursorPos(2, 7)
+    term.setTextColor(colors.red)
+    term.write("files.json appears empty or malformed.")
+    return
+end
 
 term.setCursorPos(2, 6)
+term.setTextColor(colors.lime)
+term.write("File list OK. (" .. #FILES .. " files)        ")
+
+-- ---- Create directories -----------------------------------------------------
+
+term.setCursorPos(2, 7)
 term.setTextColor(colors.lightGray)
 term.write("Creating directories...")
 
 local dirs = {"/os", "/paint", "/audio"}
 for _, dir in ipairs(dirs) do
-    if not fs.exists(dir) then
-        fs.makeDir(dir)
-    end
+    if not fs.exists(dir) then fs.makeDir(dir) end
 end
 
 -- ---- Download files ---------------------------------------------------------
@@ -150,7 +148,7 @@ local logY = 11
 
 term.setCursorPos(2, 8)
 term.setTextColor(colors.white)
-term.write("Downloading files...")
+term.write("Downloading " .. #FILES .. " files...")
 
 paintutils.drawFilledBox(barX, barY, barX + barW - 1, barY, colors.gray)
 
@@ -159,37 +157,34 @@ local failed = {}
 for i, pair in ipairs(FILES) do
     local repoPath, localPath = pair[1], pair[2]
 
-    -- Log line
     term.setCursorPos(2, logY)
     term.setTextColor(colors.lightGray)
     term.clearLine()
     term.write(repoPath)
 
     local isBinary = localPath:sub(-6) == ".dfpwm"
-    local body = isBinary and httpGetBinary(RAW_BASE .. repoPath) or httpGet(RAW_BASE .. repoPath)
+    local body = isBinary and httpGetBinary(RAW_BASE .. repoPath)
+                           or httpGet(RAW_BASE .. repoPath)
 
     if body then
         local dir = fs.getDir(localPath)
         if dir ~= "" and dir ~= "/" and not fs.exists(dir) then
             fs.makeDir(dir)
         end
-        local mode = isBinary and "wb" or "w"
-        local f = fs.open(localPath, mode)
+        local f = fs.open(localPath, isBinary and "wb" or "w")
         if f then
             f.write(body)
             f.close()
-            -- Verify it actually landed
             if not fs.exists(localPath) then
                 table.insert(failed, repoPath .. " (write failed)")
             end
         else
-            table.insert(failed, repoPath .. " (open failed, mode=" .. mode .. ")")
+            table.insert(failed, repoPath .. " (open failed)")
         end
     else
         table.insert(failed, repoPath .. " (download failed)")
     end
 
-    -- Progress bar
     local filled = math.floor(barW * (i / #FILES))
     paintutils.drawFilledBox(barX, barY, barX + filled - 1, barY, colors.orange)
 
@@ -218,7 +213,6 @@ if #failed == 0 then
     term.setCursorPos(2, logY)
     term.setTextColor(colors.lime)
     term.write("Installation complete!")
-
     term.setCursorPos(2, logY + 2)
     term.setTextColor(colors.lightGray)
     term.write("On first boot you will be asked to pick a theme.")
@@ -255,7 +249,6 @@ else
     term.setCursorPos(2, logY + #failed + 2)
     term.setTextColor(colors.lightGray)
     term.write("PunOS may still work. Reboot to try.")
-
     term.setCursorPos(2, h)
     term.setTextColor(colors.gray)
     term.write("Press any key to reboot.")
