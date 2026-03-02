@@ -9,39 +9,8 @@ local w, h = term.getSize()
 local RAW_BASE    = "https://raw.githubusercontent.com/Puntaro-CC/PunOS-CC/main/"
 local API_COMMITS = "https://api.github.com/repos/Puntaro-CC/PunOS-CC/commits/main"
 local VERSION_URL = RAW_BASE .. "version.json"
+local FILES_URL   = RAW_BASE .. "files.json"
 local LOCAL_VER   = "/.punos_version"
-
--- Files to update: {repo path, local path}
--- Repo path is relative to repo root, local path is absolute on CC
-local FILES = {
-    {"startup.lua",          "/startup.lua"},
-    {".menu",                "/.menu"},
-    {"publicChat.lua",       "/publicChat.lua"},
-    {"uninstall.lua",        "/uninstall.lua"},
-    {"back.lua",             "/back.lua"},
-    {"os/theme.lua",         "/os/theme.lua"},
-    {"os/loadTheme.lua",     "/os/loadTheme.lua"},
-    {"os/.programs",         "/os/.programs"},
-    {"os/.audioPlayer",      "/os/.audioPlayer"},
-    {"os/.calculator",       "/os/.calculator"},
-    {"os/.choosePaint",      "/os/.choosePaint"},
-    {"os/.diskBrowser",      "/os/.diskBrowser"},
-    {"os/.doom",             "/os/.doom"},
-    {"os/.download",         "/os/.download"},
-    {"os/.fileManager",      "/os/.fileManager"},
-    {"os/.fileShare",        "/os/.fileShare"},
-    {"os/.music",            "/os/.music"},
-    {"os/.paintOpen",        "/os/.paintOpen"},
-    {"os/.paintViewer",      "/os/.paintViewer"},
-    {"os/.settings",         "/os/.settings"},
-    {"os/.tetris",           "/os/.tetris"},
-    {"os/.UninstallDialog",  "/os/.UninstallDialog"},
-    {"os/.upload",           "/os/.upload"},
-    {"os/.command",          "/os/.command"},
-    {".server",              "/.server"},
-    {"os/.ChatApp",          "/os/.ChatApp"},
-    {"audio",               "/audio"},
-}
 
 -- ---- Helpers ----------------------------------------------------------------
 
@@ -104,13 +73,21 @@ local function httpGetBinary(url)
     return body
 end
 
--- Very small JSON string extractor - only needs to pull simple string values
 local function jsonStr(body, key)
-    local pattern = '"' .. key .. '"%s*:%s*"([^"]*)"'
-    return body:match(pattern)
+    return body:match('"' .. key .. '"%s*:%s*"([^"]*)"')
 end
 
--- ---- Main -------------------------------------------------------------------
+local function parseFiles(json)
+    local files = {}
+    for repoPath, localPath in json:gmatch('"([^"]+)"%s*:%s*"([^"]+)"') do
+        if repoPath ~= "files" then
+            table.insert(files, {repoPath, localPath})
+        end
+    end
+    return files
+end
+
+-- ---- Fetch data -------------------------------------------------------------
 
 term.setBackgroundColor(UI.background)
 term.clear()
@@ -118,7 +95,6 @@ drawHeader()
 status(4, "Checking for updates...", UI.subtext)
 status(5, "Connecting to GitHub...", UI.subtext)
 
--- Fetch version.json
 local verBody = httpGet(VERSION_URL)
 if not verBody then
     clearBody()
@@ -142,14 +118,25 @@ if not remoteVersion then
     return
 end
 
--- Fetch latest commit message for patch notes
+status(5, "Fetching file list...", UI.subtext)
+local filesBody = httpGet(FILES_URL)
+if not filesBody then
+    clearBody()
+    status(4, "Could not fetch files.json.", UI.error)
+    status(6, "Press any key to return.", UI.subtext)
+    os.pullEvent("key")
+    shell.run(".menu")
+    return
+end
+
+local FILES = parseFiles(filesBody)
+
 status(5, "Fetching patch notes...", UI.subtext)
 local commitBody = httpGet(API_COMMITS)
 local patchNotes = "No patch notes available."
 if commitBody then
     local msg = jsonStr(commitBody, "message")
     if msg then
-        -- Unescape common JSON sequences
         msg = msg:gsub("\\n", "\n"):gsub("\\t", "  "):gsub('\\"', '"')
         patchNotes = msg
     end
@@ -161,7 +148,6 @@ clearBody()
 
 local upToDate = (remoteVersion == localVersion)
 
--- Version line
 term.setCursorPos(2, 4)
 term.setTextColor(UI.subtext)
 term.write("Installed:  ")
@@ -171,24 +157,20 @@ term.write(localVersion)
 term.setCursorPos(2, 5)
 term.setTextColor(UI.subtext)
 term.write("Available:  ")
-if upToDate then
-    term.setTextColor(UI.success)
-else
-    term.setTextColor(UI.primary)
-end
-term.write(remoteVersion)
+term.setTextColor(upToDate and UI.success or UI.primary)
+term.write(remoteVersion .. " (" .. #FILES .. " files)")
 
--- Patch notes box
-local notesY = 7
+local notesY   = 7
+local notesEnd = h - 4
+
 paintutils.drawFilledBox(1, notesY - 1, w, notesY - 1, UI.border)
 term.setCursorPos(2, notesY - 1)
 term.setTextColor(UI.primary)
 term.write("Patch Notes:")
 
-local notesEnd = h - 4
+-- Word wrap patch notes
 local noteLines = {}
 for line in (patchNotes .. "\n"):gmatch("([^\n]*)\n") do
-    -- Word wrap to terminal width
     if #line == 0 then
         table.insert(noteLines, "")
     else
@@ -223,7 +205,6 @@ local function drawNotes()
             term.write(noteLines[lineIdx])
         end
     end
-    -- Scroll hints
     if scrollOff > 0 then
         term.setCursorPos(w - 5, notesY)
         term.setTextColor(UI.subtext)
@@ -238,7 +219,6 @@ end
 
 drawNotes()
 
--- Buttons
 paintutils.drawFilledBox(1, h - 2, w, h - 2, UI.border)
 
 local updateLabel = upToDate and " Re-install " or " Update Now "
@@ -261,22 +241,21 @@ end
 
 drawButtons()
 
--- Footer
 term.setCursorPos(2, h)
 term.setBackgroundColor(UI.background)
 term.setTextColor(UI.subtext)
 term.write("Scroll: Notes  |  Backspace: Back")
 
--- ---- Event loop -------------------------------------------------------------
+-- ---- Download ---------------------------------------------------------------
 
 local function doUpdate()
     clearBody()
     status(3, "Downloading updates...", UI.primary)
 
-    local barW  = w - 4
-    local barX  = 3
-    local barY  = 5
-    local logY  = 7
+    local barW = w - 4
+    local barX = 3
+    local barY = 5
+    local logY = 7
     local needsReboot = false
 
     paintutils.drawFilledBox(barX, barY, barX + barW - 1, barY, UI.border)
@@ -287,26 +266,29 @@ local function doUpdate()
         status(logY, "Downloading " .. repoPath .. "...", UI.subtext)
 
         local isBinary = localPath:sub(-6) == ".dfpwm"
-        local body = isBinary and httpGetBinary(RAW_BASE .. repoPath) or httpGet(RAW_BASE .. repoPath)
+        local body = isBinary and httpGetBinary(RAW_BASE .. repoPath)
+                               or httpGet(RAW_BASE .. repoPath)
+
         if body then
             local dir = fs.getDir(localPath)
-            if dir ~= "" and not fs.exists(dir) then
-                fs.makeDir(dir)
-            end
+            if dir ~= "" and not fs.exists(dir) then fs.makeDir(dir) end
             local writePath = localPath
             if localPath == "/startup.lua" then
                 writePath = "/.startup_update"
                 needsReboot = true
             end
             local f = fs.open(writePath, isBinary and "wb" or "w")
-            f.write(body)
-            f.close()
-            status(logY, "[OK] " .. repoPath, UI.success)
+            if f then
+                f.write(body)
+                f.close()
+                status(logY, "[OK] " .. repoPath, UI.success)
+            else
+                status(logY, "[!!] " .. repoPath .. " (open failed)", UI.error)
+            end
         else
-            status(logY, "[!!] " .. repoPath .. " (failed)", UI.error)
+            status(logY, "[!!] " .. repoPath .. " (download failed)", UI.error)
         end
 
-        -- Progress bar
         local filled = math.floor(barW * (i / #FILES))
         paintutils.drawFilledBox(barX, barY, barX + filled - 1, barY, UI.primary)
         local pct = math.floor(100 * i / #FILES) .. "%"
@@ -318,7 +300,6 @@ local function doUpdate()
         sleep(0.05)
     end
 
-    -- If startup.lua was updated, write a small shim that applies it on boot
     if needsReboot then
         local shim = fs.open("/startup.lua", "w")
         shim.write(
@@ -332,10 +313,8 @@ local function doUpdate()
         shim.close()
     end
 
-    -- Save new version
     saveLocalVersion(remoteVersion)
     status(logY, "All done!", UI.success)
-
     if needsReboot then
         status(logY + 1, "startup.lua will apply on reboot.", UI.subtext)
     end
@@ -348,9 +327,10 @@ local function doUpdate()
         term.write("Rebooting in " .. i .. "...")
         sleep(1)
     end
-
     os.reboot()
 end
+
+-- ---- Event loop -------------------------------------------------------------
 
 while true do
     local e, p1, p2, p3 = os.pullEvent()
@@ -361,18 +341,15 @@ while true do
         elseif p1 == -1 and scrollOff > 0 then
             scrollOff = scrollOff - 1; drawNotes()
         end
-
     elseif e == "mouse_click" then
         local mx, my = p2, p3
         if my == h - 1 then
             if mx >= ux and mx <= ux + #updateLabel - 1 then
-                doUpdate()
-                return
+                doUpdate(); return
             elseif mx >= bx and mx <= bx + #backLabel - 1 then
                 break
             end
         end
-
     elseif e == "key" then
         if p1 == keys.backspace then
             break
@@ -381,8 +358,7 @@ while true do
         elseif p1 == keys.down and scrollOff + visLines < #noteLines then
             scrollOff = scrollOff + 1; drawNotes()
         elseif p1 == keys.enter then
-            doUpdate()
-            return
+            doUpdate(); return
         end
     end
 end
