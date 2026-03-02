@@ -31,6 +31,7 @@
         "audio/Devils_Never_Cry.dfpwm":     "/audio/Devils_Never_Cry.dfpwm",
         "audio/Judas_MetalRemix.dfpwm":     "/audio/Judas_MetalRemix.dfpwm",
         "audio/worm_switch.dfpwm":          "/audio/worm_switch.dfpwm",
-        "audio/M1M1M1M1.dfpwm":             "/audio/M1M1M1M1.dfpwm"
+        "audio/M1M1M1M1.dfpwm":             "/audio/M1M1M1M1.dfpwm",
+        "audio/FredbearsVoicemail.dfpwm":   "/audio/FredbearsVoicemail.dfpwm"
     }
 }
