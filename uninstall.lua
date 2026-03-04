@@ -55,6 +55,16 @@ local steps = {
     {path = "uninstall.lua",  label = "Removing uninstaller..."},
     {path = "/audio",         label = "Deleting audio files..."},
     {path = "/paint",         label = "Removing paint files..."},
+    {path = "/levels",        label = "Removing DOOM levels..."},
+    {path = "/models",        label = "Removing DOOM models..."},
+    {path = "/images",        label = "Removing DOOM images..."},
+    {path = "Doom.lua",       label = "Removing DOOM launcher..."},
+    {path = "Pine3D-minified.lua",        label = "Removing 3D enviornement setup..."},
+    {path = "blittle",        label = "Removing 3D enviornement setup..."},
+    {path = "settings",        label = "Removing 3D enviornement setup..."},
+    {path = "betterblittle.lua",        label = "Removing 3D enviornement setup..."},
+    {path = "LICENSE",        label = "Removing 3D enviornement setup..."},
+    {path = "readme.MD",        label = "Removing 3D enviornement setup..."},
 }
 
 -- Progress bar setup
