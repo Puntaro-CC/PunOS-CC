@@ -18,7 +18,8 @@ local LOCAL_CACHE    = "/.punos_files_cache"
 
 -- .updater is NEVER replaced by the updater itself, forward or backward.
 -- Use the installer to update the updater.
-local UPDATER_LOCAL_PATH = "/os/.updater"
+local UPDATER_REPO_PATH  = "os/.updater"   -- path as GitHub reports it in diffs
+local UPDATER_LOCAL_PATH = "/os/.updater"  -- path on the local filesystem
 
 -- ---- Helpers ----------------------------------------------------------------
 
@@ -601,37 +602,27 @@ local function doUpdate(targetSHA, isRollback)
                     local repoPath = fileEntry.filename
                     local st       = fileEntry.status
 
-                    if st == "removed" then
+                    -- Check repo path directly — never trust fileMap for this,
+                    -- since the naive JSON regex can produce false matches.
+                    if repoPath == UPDATER_REPO_PATH then
+                        updaterSkipped = true
+
+                    elseif st == "removed" then
                         local lp = oldFileMap[repoPath]
-                        if lp and lp ~= UPDATER_LOCAL_PATH then
-                            table.insert(toDelete, lp)
-                        end
+                        if lp then table.insert(toDelete, lp) end
 
                     elseif st == "added" or st == "modified" then
                         local lp = fileMap[repoPath]
-                        if lp then
-                            if lp == UPDATER_LOCAL_PATH then
-                                updaterSkipped = true
-                            else
-                                table.insert(toDownload, { repoPath, lp })
-                            end
-                        end
+                        if lp then table.insert(toDownload, { repoPath, lp }) end
 
                     elseif st == "renamed" then
-                        if fileEntry.previous_filename then
+                        if fileEntry.previous_filename
+                        and fileEntry.previous_filename ~= UPDATER_REPO_PATH then
                             local oldLp = oldFileMap[fileEntry.previous_filename]
-                            if oldLp and oldLp ~= UPDATER_LOCAL_PATH then
-                                table.insert(toDelete, oldLp)
-                            end
+                            if oldLp then table.insert(toDelete, oldLp) end
                         end
                         local lp = fileMap[repoPath]
-                        if lp then
-                            if lp == UPDATER_LOCAL_PATH then
-                                updaterSkipped = true
-                            else
-                                table.insert(toDownload, { repoPath, lp })
-                            end
-                        end
+                        if lp then table.insert(toDownload, { repoPath, lp }) end
                     end
                 end
 
