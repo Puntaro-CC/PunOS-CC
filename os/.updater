@@ -16,7 +16,8 @@ local LOCAL_VER      = "/.punos_version"
 local LOCAL_SHA      = "/.punos_sha"
 local LOCAL_CACHE    = "/.punos_files_cache"
 
--- The local path .updater is installed to (must match files.json)
+-- .updater is NEVER replaced by the updater itself, forward or backward.
+-- Use the installer to update the updater.
 local UPDATER_LOCAL_PATH = "/os/.updater"
 
 -- ---- Helpers ----------------------------------------------------------------
@@ -149,8 +150,7 @@ local function fetchVersionAtSHA(sha)
 end
 
 -- ---- Confirm dialog ---------------------------------------------------------
--- Shows a warning with a message and Yes/No buttons.
--- Returns true if user confirmed, false if cancelled.
+-- Returns true if confirmed, false if cancelled.
 
 local function confirmDialog(lines, yesLabel, noLabel)
     yesLabel = yesLabel or " Yes, proceed "
@@ -158,7 +158,7 @@ local function confirmDialog(lines, yesLabel, noLabel)
 
     clearBody()
 
-    local midY = math.floor(h / 2)
+    local midY   = math.floor(h / 2)
     local startY = midY - math.floor(#lines / 2)
 
     for i, line in ipairs(lines) do
@@ -169,40 +169,32 @@ local function confirmDialog(lines, yesLabel, noLabel)
         term.write(line)
     end
 
-    local btnY  = startY + #lines + 2
-    local yesX  = math.floor(w / 2) - #yesLabel - 1
-    local noX   = math.floor(w / 2) + 2
+    local btnY = startY + #lines + 2
+    local yesX = math.floor(w / 2) - #yesLabel - 1
+    local noX  = math.floor(w / 2) + 2
 
-    local function drawConfirmButtons(hoveredYes, hoveredNo)
-        paintutils.drawFilledBox(yesX, btnY, yesX + #yesLabel - 1, btnY, hoveredYes and UI.error or UI.border)
-        term.setCursorPos(yesX, btnY)
-        term.setTextColor(hoveredYes and UI.background or UI.text)
-        term.write(yesLabel)
+    paintutils.drawFilledBox(yesX, btnY, yesX + #yesLabel - 1, btnY, UI.error)
+    term.setCursorPos(yesX, btnY)
+    term.setTextColor(UI.background)
+    term.write(yesLabel)
 
-        paintutils.drawFilledBox(noX, btnY, noX + #noLabel - 1, btnY, hoveredNo and UI.primary or UI.border)
-        term.setCursorPos(noX, btnY)
-        term.setTextColor(hoveredNo and UI.background or UI.text)
-        term.write(noLabel)
-    end
-
-    drawConfirmButtons(false, false)
+    paintutils.drawFilledBox(noX, btnY, noX + #noLabel - 1, btnY, UI.primary)
+    term.setCursorPos(noX, btnY)
+    term.setTextColor(UI.background)
+    term.write(noLabel)
 
     while true do
         local e, p1, p2, p3 = os.pullEvent()
         if e == "mouse_click" then
             local mx, my = p2, p3
             if my == btnY then
-                if mx >= yesX and mx <= yesX + #yesLabel - 1 then
-                    return true
-                elseif mx >= noX and mx <= noX + #noLabel - 1 then
-                    return false
+                if mx >= yesX and mx <= yesX + #yesLabel - 1 then return true
+                elseif mx >= noX and mx <= noX + #noLabel - 1 then return false
                 end
             end
         elseif e == "key" then
-            if p1 == keys.enter or p1 == keys.y then
-                return true
-            elseif p1 == keys.n or p1 == keys.backspace or p1 == keys.escape then
-                return false
+            if p1 == keys.enter or p1 == keys.y then return true
+            elseif p1 == keys.n or p1 == keys.backspace or p1 == keys.escape then return false
             end
         end
     end
@@ -217,6 +209,8 @@ drawTabs(1)
 status(5, "Checking for updates...", UI.subtext)
 status(6, "Connecting to GitHub...", UI.subtext)
 
+-- Fetch the latest commit that touched version.json specifically.
+-- Random file saves in GitHub won't trigger updates; only a version bump will.
 local verCommitBody = httpGet(API_VER_LATEST)
 if not verCommitBody then
     clearBody()
@@ -245,18 +239,13 @@ if verCommits[1].commit and verCommits[1].commit.message then
         :gsub("\\n", "\n"):gsub("\\t", "  "):gsub('\\"', '"')
 end
 
+-- files.json is required to update. If it can't be fetched we stay in the
+-- updater but disable the Update button rather than booting back to .menu.
 status(6, "Fetching file list...", UI.subtext)
 local filesBody = httpGet(RAW_MAIN .. "files.json")
-if not filesBody then
-    clearBody()
-    status(5, "Could not fetch files.json.", UI.error)
-    status(7, "Press any key to return.", UI.subtext)
-    os.pullEvent("key")
-    shell.run(".menu")
-    return
-end
+local filesOk   = (filesBody ~= nil)
+local FILES     = filesOk and parseFiles(filesBody) or {}
 
-local FILES         = parseFiles(filesBody)
 local localVersion  = readLocalVersion()
 local localSHA      = readLocalSHA()
 local remoteVersion = jsonStr(httpGet(RAW_MAIN .. "version.json") or "", "version") or "?"
@@ -325,10 +314,15 @@ local function drawNotes()
 end
 
 local function drawButtons()
+    -- Update button: grayed out entirely if files.json unavailable
+    local updateActive = filesOk
     paintutils.drawFilledBox(ux, h - 1, ux + #updateLabel - 1, h - 1,
-        upToDate and UI.border or UI.primary)
+        (not updateActive or upToDate) and UI.border or UI.primary)
     term.setCursorPos(ux, h - 1)
-    term.setTextColor(upToDate and UI.subtext or UI.background)
+    term.setTextColor(
+        (not updateActive) and UI.subtext or
+        upToDate           and UI.subtext or
+        UI.background)
     term.write(updateLabel)
 
     paintutils.drawFilledBox(bx, h - 1, bx + #backLabel - 1, h - 1, UI.border)
@@ -350,7 +344,14 @@ local function drawUpdatesTab()
     term.setTextColor(UI.subtext)
     term.write("Available:  ")
     term.setTextColor(upToDate and UI.success or UI.primary)
-    term.write(remoteVersion .. " (" .. #FILES .. " files)")
+    if filesOk then
+        term.write(remoteVersion .. " (" .. #FILES .. " files)")
+    else
+        term.write(remoteVersion)
+        term.setTextColor(UI.error)
+        term.setCursorPos(2, 7)
+        term.write("files.json unavailable — updates disabled")
+    end
 
     paintutils.drawFilledBox(1, notesY - 1, w, notesY - 1, UI.border)
     term.setCursorPos(2, notesY - 1)
@@ -396,7 +397,6 @@ local function loadHistory()
         return false
     end
 
-    -- Build entries first, then fetch version numbers with a progress bar
     local raw = {}
     for _, entry in ipairs(data) do
         local sha  = entry.sha
@@ -409,8 +409,8 @@ local function loadHistory()
         table.insert(raw, { sha = sha, msg = msg, date = date })
     end
 
-    -- Fetch version.json at each SHA to get the human-readable version number.
-    -- This costs one HTTP request per history entry, so we show a progress bar.
+    -- Fetch version.json at each SHA for human-readable version numbers.
+    -- One HTTP request per entry; progress bar shown while loading.
     status(5, "Fetching version numbers...", UI.subtext)
     local barW = w - 4
     local barX = 3
@@ -419,7 +419,7 @@ local function loadHistory()
 
     histEntries = {}
     for i, entry in ipairs(raw) do
-        local ver = fetchVersionAtSHA(entry.sha) or ("?" .. entry.sha:sub(1,7))
+        local ver = fetchVersionAtSHA(entry.sha) or ("?" .. entry.sha:sub(1, 7))
         table.insert(histEntries, {
             sha     = entry.sha,
             version = ver,
@@ -479,8 +479,7 @@ local function drawHistoryTab()
             end
 
             local marker = isInstalled and "* " or "  "
-            -- Show version number instead of short SHA
-            local line = marker .. entry.date .. "  v" .. entry.version .. "  " .. entry.msg
+            local line   = marker .. entry.date .. "  v" .. entry.version .. "  " .. entry.msg
             if #line > w - 2 then line = line:sub(1, w - 2) end
             term.write(line)
         end
@@ -501,7 +500,8 @@ local function drawHistoryTab()
 
     paintutils.drawFilledBox(1, h - 2, w, h - 2, UI.border)
 
-    local canInstall = (histSelected ~= nil)
+    -- Install button grayed out if files.json unavailable
+    local canInstall = (histSelected ~= nil and filesOk)
     local ix = math.floor((w - #HIST_INSTALL) / 2)
     paintutils.drawFilledBox(ix, h - 1, ix + #HIST_INSTALL - 1, h - 1,
         canInstall and UI.primary or UI.border)
@@ -512,77 +512,65 @@ local function drawHistoryTab()
     term.setCursorPos(2, h)
     term.setBackgroundColor(UI.background)
     term.setTextColor(UI.subtext)
-    term.write("Up/Down or click to select  |  Enter to install  |  * = installed")
+    if not filesOk then
+        term.write("files.json unavailable — installs disabled")
+    else
+        term.write("Up/Down or click to select  |  Enter to install  |  * = installed")
+    end
 end
 
 -- ---- doUpdate ---------------------------------------------------------------
 
 local function doUpdate(targetSHA, isRollback)
-
-    -- ROLLBACK SAFETY: warn if .updater itself differs at the target SHA.
-    -- If the user is rolling back to a version where the updater was different,
-    -- that old updater may be broken or incompatible, requiring a fresh install.
-    if isRollback then
-        local remoteUpdater  = httpGet(REPO_RAW .. targetSHA .. "/.updater")
-        local localUpdaterFile = fs.open(UPDATER_LOCAL_PATH, "r")
-        local localUpdater   = localUpdaterFile and localUpdaterFile.readAll() or ""
-        if localUpdaterFile then localUpdaterFile.close() end
-
-        if remoteUpdater and remoteUpdater ~= localUpdater then
-            local confirmed = confirmDialog({
-                "  WARNING: Updater Version Mismatch  ",
-                "",
-                "The version you are rolling back to has a",
-                "different .updater than the one installed.",
-                "",
-                "If the old updater is broken or incompatible,",
-                "you may need to do a fresh OS install to",
-                "recover future update functionality.",
-                "",
-                "Proceed with rollback anyway?",
-            }, " Yes, roll back ", " Cancel ")
-
-            -- Redraw tabs and history before returning if cancelled
-            if not confirmed then
-                term.setBackgroundColor(UI.background)
-                term.clear()
-                drawHeader()
-                tabBounds = drawTabs(activeTab)
-                drawHistoryTab()
-                return
-            end
-        end
-    end
-
     clearBody()
     status(4, isRollback and "Rolling back..." or "Downloading updates...", UI.primary)
 
     local toDownload     = {}
     local toDelete       = {}
     local rawBase        = REPO_RAW .. targetSHA .. "/"
-    local updaterSkipped = false   -- flag: .updater was in the diff but excluded
+    local updaterSkipped = false
+
+    -- Helper: filter .updater out of any file list
+    local function filterUpdater(list)
+        local out = {}
+        for _, pair in ipairs(list) do
+            if pair[2] == UPDATER_LOCAL_PATH then
+                updaterSkipped = true
+            else
+                table.insert(out, pair)
+            end
+        end
+        return out
+    end
 
     if isRollback then
         status(5, "Fetching file list at target version...", UI.subtext)
         local snapFilesBody = httpGet(rawBase .. "files.json")
         if not snapFilesBody then
             status(5, "Could not fetch files.json at target SHA.", UI.error)
-            sleep(2); return
+            sleep(2)
+            -- Redraw so we land back on the history tab cleanly
+            term.setBackgroundColor(UI.background)
+            term.clear()
+            drawHeader()
+            tabBounds = drawTabs(activeTab)
+            drawHistoryTab()
+            return
         end
-        -- Include ALL files for rollback (including .updater) since user
-        -- was already warned and confirmed above.
-        toDownload = parseFiles(snapFilesBody)
+
+        -- .updater is always excluded — even on rollback
+        toDownload = filterUpdater(parseFiles(snapFilesBody))
 
         local snapMap = parseFilesAsMap(snapFilesBody)
         local curMap  = parseFilesAsMap(filesBody)
         for repoPath, localPath in pairs(curMap) do
-            if not snapMap[repoPath] then
+            if not snapMap[repoPath] and localPath ~= UPDATER_LOCAL_PATH then
                 table.insert(toDelete, localPath)
             end
         end
 
     elseif localSHA == nil then
-        toDownload = FILES
+        toDownload = filterUpdater(FILES)
         rawBase    = RAW_MAIN
 
     else
@@ -593,26 +581,13 @@ local function doUpdate(targetSHA, isRollback)
         if not compareBody then
             status(5, "Diff fetch failed. Falling back to full install.", UI.error)
             sleep(1.5)
-            -- Even in full-install fallback, skip .updater
-            for _, pair in ipairs(FILES) do
-                if pair[2] == UPDATER_LOCAL_PATH then
-                    updaterSkipped = true
-                else
-                    table.insert(toDownload, pair)
-                end
-            end
+            toDownload = filterUpdater(FILES)
         else
             local ok2, compareData = pcall(textutils.unserialiseJSON, compareBody)
             if not ok2 or not compareData or not compareData.files then
                 status(5, "Diff parse failed. Falling back to full install.", UI.error)
                 sleep(1.5)
-                for _, pair in ipairs(FILES) do
-                    if pair[2] == UPDATER_LOCAL_PATH then
-                        updaterSkipped = true
-                    else
-                        table.insert(toDownload, pair)
-                    end
-                end
+                toDownload = filterUpdater(FILES)
             else
                 local fileMap    = parseFilesAsMap(filesBody)
                 local oldFileMap = {}
@@ -636,7 +611,6 @@ local function doUpdate(targetSHA, isRollback)
                         local lp = fileMap[repoPath]
                         if lp then
                             if lp == UPDATER_LOCAL_PATH then
-                                -- Silently skip .updater on normal forward updates
                                 updaterSkipped = true
                             else
                                 table.insert(toDownload, { repoPath, lp })
@@ -770,15 +744,12 @@ local function doUpdate(targetSHA, isRollback)
 
     status(logY, "All done!", UI.success)
 
-    -- Notify user if .updater was skipped so they know to update it manually
     if updaterSkipped then
-        status(logY + 1, "Note: .updater was updated in this release.", UI.primary)
-        status(logY + 2, "Run the installer to get the new version.", UI.subtext)
+        status(logY + 1, "Note: .updater was changed in this release.", UI.primary)
+        status(logY + 2, "Run the installer to update it.", UI.subtext)
         sleep(4)
-    else
-        if needsReboot then
-            status(logY + 1, "startup.lua will apply on reboot.", UI.subtext)
-        end
+    elseif needsReboot then
+        status(logY + 1, "startup.lua will apply on reboot.", UI.subtext)
         sleep(1)
     end
 
@@ -791,6 +762,38 @@ local function doUpdate(targetSHA, isRollback)
         sleep(1)
     end
     os.reboot()
+end
+
+-- ---- Rollback confirm -------------------------------------------------------
+-- Always shown before any rollback. Includes an extra warning line if
+-- .updater differs at the target SHA (informational only — .updater is
+-- never replaced regardless).
+
+local function confirmRollback(entry)
+    local remoteUpdater    = httpGet(REPO_RAW .. entry.sha .. "/os/.updater")
+    local localUpdaterFile = fs.open(UPDATER_LOCAL_PATH, "r")
+    local localUpdater     = localUpdaterFile and localUpdaterFile.readAll() or ""
+    if localUpdaterFile then localUpdaterFile.close() end
+    local updaterDiffers   = (remoteUpdater ~= nil and remoteUpdater ~= localUpdater)
+
+    local lines = {
+        "  Roll back to v" .. entry.version .. "?  ",
+        "",
+        "This will replace your current OS files with",
+        "the files from that version.",
+    }
+
+    if updaterDiffers then
+        table.insert(lines, "")
+        table.insert(lines, "Note: that version had a different .updater.")
+        table.insert(lines, "Yours will NOT be changed, but if it is")
+        table.insert(lines, "incompatible you may need a fresh install.")
+    end
+
+    table.insert(lines, "")
+    table.insert(lines, "This cannot be undone without updating again.")
+
+    return confirmDialog(lines, " Yes, roll back ", " Cancel ")
 end
 
 -- ---- Initial draw -----------------------------------------------------------
@@ -825,7 +828,7 @@ while true do
 
         elseif activeTab == 1 then
             if my == h - 1 then
-                if mx >= ux and mx <= ux + #updateLabel - 1 then
+                if filesOk and mx >= ux and mx <= ux + #updateLabel - 1 then
                     doUpdate(latestSHA, false); return
                 elseif mx >= bx and mx <= bx + #backLabel - 1 then
                     break
@@ -839,11 +842,20 @@ while true do
                     histSelected = idx
                     drawHistoryTab()
                 end
-            elseif my == h - 1 and histSelected then
+            elseif my == h - 1 and histSelected and filesOk then
                 local ix = math.floor((w - #HIST_INSTALL) / 2)
                 if mx >= ix and mx <= ix + #HIST_INSTALL - 1 then
                     local entry = histEntries[histSelected]
-                    if entry then doUpdate(entry.sha, true); return end
+                    if entry then
+                        local confirmed = confirmRollback(entry)
+                        if confirmed then doUpdate(entry.sha, true); return end
+                        -- Redraw after dialog regardless
+                        term.setBackgroundColor(UI.background)
+                        term.clear()
+                        drawHeader()
+                        tabBounds = drawTabs(activeTab)
+                        drawHistoryTab()
+                    end
                 end
             end
         end
@@ -878,7 +890,7 @@ while true do
                 scrollOff = scrollOff - 1; drawNotes()
             elseif p1 == keys.down and scrollOff + visLines < #noteLines then
                 scrollOff = scrollOff + 1; drawNotes()
-            elseif p1 == keys.enter then
+            elseif p1 == keys.enter and filesOk then
                 doUpdate(latestSHA, false); return
             end
 
@@ -901,9 +913,17 @@ while true do
                 elseif not histSelected and #histEntries > 0 then
                     histSelected = 1; drawHistoryTab()
                 end
-            elseif p1 == keys.enter and histSelected then
+            elseif p1 == keys.enter and histSelected and filesOk then
                 local entry = histEntries[histSelected]
-                if entry then doUpdate(entry.sha, true); return end
+                if entry then
+                    local confirmed = confirmRollback(entry)
+                    if confirmed then doUpdate(entry.sha, true); return end
+                    term.setBackgroundColor(UI.background)
+                    term.clear()
+                    drawHeader()
+                    tabBounds = drawTabs(activeTab)
+                    drawHistoryTab()
+                end
             end
         end
     end
