@@ -1,118 +1,387 @@
-os.pullEvent = os.pullEventRaw
-local UI = dofile("/os/loadTheme.lua")
+-- PunOS TARDIS Console
+-- Replaces .menu on the tardis kernel.
+-- Persistent live dashboard reacting to TARDIS events in real time.
 
+os.pullEvent = os.pullEventRaw
+
+local UI = dofile("/os/loadTheme.lua")
 local w, h = term.getSize()
 
-local function drawBox(x, y, width, height, color)
-    paintutils.drawBox(x, y, x + width - 1, y + height - 1, color)
+-- ---- Monitor detection -----------------------------------------------------
+-- If a monitor is connected, redirect all output to it.
+-- This allows a larger external display with a mouse/keyboard peripheral.
+
+for _, side in ipairs({"top", "bottom", "left", "right", "front", "back"}) do
+    local ok, p = pcall(peripheral.wrap, side)
+    if ok and p and type(p.isColor) == "function" then
+        term.redirect(p)
+        p.setTextScale(0.5)  -- smaller scale = more screen real estate
+        w, h = term.getSize()
+        break
+    end
 end
 
-local function printCentered(y, s, color)
-    local x = math.floor((w - string.len(s)) / 2)
-    term.setCursorPos(x, y)
-    term.setTextColor(color or UI.text)
-    term.write(s)
+-- ---- Find TARDIS peripheral -------------------------------------------------
+-- Tries every side, picks the first one that exposes the TARDIS API.
+-- Only works inside the TARDIS dimension.
+
+local tardis     = nil
+local tardisside = nil
+
+for _, side in ipairs({"top", "bottom", "left", "right", "front", "back"}) do
+    local ok, p = pcall(peripheral.wrap, side)
+    if ok and p and type(p.isInFlight) == "function" then
+        tardis     = p
+        tardisside = side
+        break
+    end
 end
+
+local tardisOk = (tardis ~= nil)
+
+-- ---- Safe call helpers ------------------------------------------------------
+-- Wraps peripheral calls so a bad response never crashes the console.
+
+local function safe(fn, ...)
+    if not tardisOk then return nil end
+    local ok, r = pcall(fn, ...)
+    return ok and r or nil
+end
+
+local function safeMulti(fn, ...)
+    if not tardisOk then return nil end
+    local ok, a, b, c, d, e = pcall(fn, ...)
+    if ok then return a, b, c, d, e end
+    return nil
+end
+
+-- Strips "mod:" prefix from dimension IDs for compact display.
+local function shortDim(dim)
+    if not dim then return "?" end
+    return dim:match(":(.+)$") or dim
+end
+
+-- ---- Header -----------------------------------------------------------------
 
 local function drawHeader()
-    paintutils.drawFilledBox(1, 1, w, 3, UI.border)
-    term.setCursorPos(2, 2)
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1)
     term.setTextColor(UI.primary)
-    term.write("PunOS - TARDIS")
+    term.write("PunOS  TARDIS Console")
+
+    local statusText = tardisOk and "ONLINE" or "NO SIGNAL"
+    local statusCol  = tardisOk and UI.success or UI.error
+    term.setCursorPos(w - #statusText - 1, 1)
+    term.setBackgroundColor(UI.border)
+    term.setTextColor(statusCol)
+    term.write(statusText)
+
+    local time = textutils.formatTime(os.time(), false)
+    local day  = "Day " .. os.day()
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.subtext)
+    term.write(day .. " | " .. time)
+
     local info = "ID:" .. os.getComputerID()
     term.setCursorPos(w - #info - 1, 2)
     term.setTextColor(UI.subtext)
     term.write(info)
-    local time = textutils.formatTime(os.time(), false)
-    local day  = "Day " .. os.day()
-    term.setCursorPos(2, 3)
-    term.setTextColor(UI.subtext)
-    term.write(day .. " | " .. time)
 end
 
-local menuOptions = {
-    {name = "Command",   icon = ">_"},
-    {name = "Programs",  icon = "[]"},
-    {name = "Settings",  icon = "* "},
-    {name = "Shut Down", icon = "X "},
-    {name = "Uninstall", icon = "! "},
-}
+-- ---- Bottom nav -------------------------------------------------------------
 
-local nOption = 1
-local boxWidth = 20
-local boxHeight = 2
-local buttonRegions = {}
+local NAV_LABELS  = { " Navigate ", " Doors ", " Shell ", " Programs ", " Off " }
+local navBounds   = {}
 
-local function drawMenu()
+local function drawNav()
+    paintutils.drawFilledBox(1, h - 1, w, h - 1, UI.border)
+    local x = 2
+    navBounds = {}
+    for i, label in ipairs(NAV_LABELS) do
+        local x2 = x + #label - 1
+        term.setCursorPos(x, h - 1)
+        term.setBackgroundColor(UI.border)
+        term.setTextColor(UI.text)
+        term.write(label)
+        navBounds[i] = { x, x2 }
+        x = x2 + 1
+    end
+    term.setCursorPos(1, h)
+    term.setBackgroundColor(UI.background)
+    term.setTextColor(UI.subtext)
+    term.clearLine()
+    term.write(" Click nav or press 1-5")
+end
+
+-- ---- Status body ------------------------------------------------------------
+
+local function drawStatus()
+    for y = 3, h - 2 do
+        term.setCursorPos(1, y)
+        term.setBackgroundColor(UI.background)
+        term.clearLine()
+    end
+
+    if not tardisOk then
+        local msgs = {
+            "No TARDIS peripheral detected.",
+            "Make sure this computer is inside",
+            "the TARDIS dimension, then reboot.",
+        }
+        local startY = math.floor(h / 2) - 1
+        for i, msg in ipairs(msgs) do
+            term.setCursorPos(math.floor((w - #msg) / 2), startY + i - 1)
+            term.setTextColor(i == 1 and UI.error or UI.subtext)
+            term.write(msg)
+        end
+        return
+    end
+
+    -- Gather state
+    local inFlight    = safe(tardis.isInFlight)
+    local isLanding   = safe(tardis.getIsLanding)
+    local isCrashing  = safe(tardis.getIsCrashing)
+    local onCooldown  = safe(tardis.getIsOnCooldown)
+    local canControls = safe(tardis.getCanUseControls)
+    local flightPct   = safe(tardis.getFlightPercent) or 0
+    local canBegin    = safe(tardis.canBeginFlight)
+    local canEnd      = safe(tardis.canEndFlight)
+    local inDanger    = safe(tardis.isInDangerZone)
+    local flightEvt   = safe(tardis.getFlightEventActive)
+    local evtControl  = safe(tardis.getFlightEventControl)
+    local reqEvents   = safe(tardis.getRequiredFlightEvents) or 0
+    local doneEvents  = safe(tardis.getRespondedFlightEvents) or 0
+    local intOpen     = safe(tardis.getInternalDoorOpen)
+    local intLocked, extLocked = safeMulti(tardis.getDoorLocked)
+    local shellTheme  = safe(tardis.getExteriorTheme) or "unknown"
+    local cx, cy, cz, cFacing, cDim = safeMulti(tardis.getLastKnownLocation)
+    local tx, ty, tz, tFacing, tDim = safeMulti(tardis.getTargetLocation)
+
+    local row = 3
+
+    -- ---- Flight status row --------------------------------------------------
+    local flightLabel, flightCol
+    if isCrashing then
+        flightLabel = "!! CRASHING !!"; flightCol = UI.error
+    elseif onCooldown then
+        flightLabel = "COOLDOWN";       flightCol = UI.error
+    elseif inDanger then
+        flightLabel = "DANGER ZONE";   flightCol = UI.error
+    elseif isLanding then
+        flightLabel = "LANDING";        flightCol = UI.primary
+    elseif inFlight then
+        flightLabel = "IN FLIGHT";      flightCol = UI.primary
+    elseif canBegin then
+        flightLabel = "READY";          flightCol = UI.success
+    else
+        flightLabel = "LANDED";         flightCol = UI.success
+    end
+
+    paintutils.drawFilledBox(1, row, w, row, UI.border)
+    term.setCursorPos(2, row)
+    term.setBackgroundColor(UI.border)
+    term.setTextColor(UI.subtext)
+    term.write("FLIGHT  ")
+    term.setTextColor(flightCol)
+    term.write(flightLabel)
+
+    if inFlight then
+        local pct = math.floor(flightPct * 100) .. "%"
+        term.setCursorPos(w - #pct - 1, row)
+        term.setTextColor(UI.primary)
+        term.write(pct)
+    end
+    row = row + 1
+
+    -- Flight progress bar
+    if inFlight then
+        local barW   = w - 4
+        local filled = math.floor(barW * flightPct)
+        term.setBackgroundColor(UI.background)
+        if filled > 0 then
+            paintutils.drawFilledBox(3, row, 2 + filled, row, UI.primary)
+        end
+        if filled < barW then
+            paintutils.drawFilledBox(3 + filled, row, 3 + barW - 1, row, UI.border)
+        end
+        row = row + 1
+    end
+
+    -- ---- Flight event warning -----------------------------------------------
+    if inFlight and (inDanger or flightEvt) then
+        paintutils.drawFilledBox(1, row, w, row, UI.error)
+        term.setCursorPos(2, row)
+        term.setBackgroundColor(UI.error)
+        term.setTextColor(UI.background)
+        if inDanger then
+            term.write("DANGER: Complete danger zone events now!")
+        elseif flightEvt and evtControl then
+            term.write("Interact with: " .. evtControl ..
+                "  (" .. doneEvents .. "/" .. reqEvents .. ")")
+        end
+        row = row + 1
+    end
+
+    -- ---- Location section ---------------------------------------------------
+    paintutils.drawFilledBox(1, row, w, row, UI.border)
+    term.setCursorPos(2, row)
+    term.setBackgroundColor(UI.border)
+    term.setTextColor(UI.primary)
+    term.write("LOCATION")
+    row = row + 1
+
+    term.setBackgroundColor(UI.background)
+    term.setCursorPos(2, row)
+    term.setTextColor(UI.subtext)
+    term.write("Current  ")
+    term.setTextColor(UI.text)
+    if cx then
+        local loc = cx.." "..cy.." "..cz.."  "..shortDim(cDim).."  "..(cFacing or "?")
+        term.write(loc:sub(1, w - 12))
+    else
+        term.write("unknown")
+    end
+    row = row + 1
+
+    term.setCursorPos(2, row)
+    term.setTextColor(UI.subtext)
+    term.write("Target   ")
+    term.setTextColor(UI.text)
+    if tx then
+        local loc = tx.." "..ty.." "..tz.."  "..shortDim(tDim).."  "..(tFacing or "?")
+        term.write(loc:sub(1, w - 12))
+    else
+        term.setTextColor(UI.subtext)
+        term.write("not set")
+    end
+    row = row + 1
+
+    -- ---- Systems section ----------------------------------------------------
+    paintutils.drawFilledBox(1, row, w, row, UI.border)
+    term.setCursorPos(2, row)
+    term.setBackgroundColor(UI.border)
+    term.setTextColor(UI.primary)
+    term.write("SYSTEMS")
+    row = row + 1
+
+    term.setBackgroundColor(UI.background)
+    term.setCursorPos(2, row)
+    term.setTextColor(UI.subtext)
+    term.write("Doors    ")
+    term.setTextColor(intOpen and UI.error or UI.success)
+    term.write(intOpen and "Open  " or "Closed")
+    term.setTextColor(UI.subtext)
+    term.write("  Lock ")
+    term.setTextColor(intLocked and UI.error or UI.success)
+    term.write(intLocked and "Locked" or "Free  ")
+    term.setTextColor(UI.subtext)
+    term.write("  Ext ")
+    term.setTextColor(extLocked and UI.error or UI.success)
+    term.write(extLocked and "Locked" or "Free")
+    row = row + 1
+
+    term.setCursorPos(2, row)
+    term.setTextColor(UI.subtext)
+    term.write("Shell    ")
+    term.setTextColor(UI.text)
+    term.write(shellTheme)
+    row = row + 1
+
+    -- ---- Controls hint ------------------------------------------------------
+    if row <= h - 3 then
+        term.setCursorPos(2, row)
+        term.setBackgroundColor(UI.background)
+        if not canControls then
+            term.setTextColor(UI.error)
+            term.write("Controls unavailable — TARDIS may have crashed.")
+        elseif canBegin and not inFlight then
+            term.setTextColor(UI.success)
+            term.write("Ready to fly. Set destination in Navigate.")
+        elseif canEnd and inFlight then
+            term.setTextColor(UI.primary)
+            term.write("Can land. Press Navigate > End Flight.")
+        end
+    end
+end
+
+-- ---- Nav actions ------------------------------------------------------------
+
+local function runApp(path)
+    term.setBackgroundColor(colors.black)
+    term.clear()
+    term.setCursorPos(1, 1)
+    shell.run(path)
+    -- Redraw console on return
     term.setBackgroundColor(UI.background)
     term.clear()
     drawHeader()
-    printCentered(5, "MAIN MENU", UI.primary)
-
-    local totalHeight = (#menuOptions * boxHeight) + ((#menuOptions - 1) * 1)
-    local startY = math.floor((h - totalHeight - 7) / 2) + 6
-    if startY + totalHeight > h - 2 then startY = 7 end
-
-    buttonRegions = {}
-
-    for i, option in ipairs(menuOptions) do
-        local y = startY + (i - 1) * (boxHeight + 1)
-        local x = math.floor((w - boxWidth) / 2)
-
-        buttonRegions[i] = {x1 = x, y1 = y, x2 = x + boxWidth - 1, y2 = y + boxHeight - 1}
-
-        if i == nOption then
-            paintutils.drawFilledBox(x, y, x + boxWidth - 1, y + boxHeight - 1, UI.primary)
-            term.setTextColor(UI.background)
-        else
-            drawBox(x, y, boxWidth, boxHeight, UI.border)
-            term.setTextColor(UI.text)
-        end
-
-        local text = option.icon .. " " .. option.name
-        term.setCursorPos(x + math.floor((boxWidth - #text) / 2), y + math.floor(boxHeight / 2))
-        term.write(text)
-    end
-
-    term.setCursorPos(2, h)
-    term.setTextColor(UI.subtext)
-    term.write("W/S or Click: Select | Enter: Confirm")
+    drawStatus()
+    drawNav()
 end
 
-local timerID = os.startTimer(1)
-drawMenu()
+local navActions = {
+    function() runApp("os/.tardisNav")    end,
+    function() runApp("os/.tardisDoors")  end,
+    function() runApp("os/.tardisShell")  end,
+    function() runApp("os/.programs")     end,
+    function() os.shutdown()              end,
+}
+
+-- ---- Initial draw -----------------------------------------------------------
+
+term.setBackgroundColor(UI.background)
+term.clear()
+drawHeader()
+drawStatus()
+drawNav()
+
+local clockTimer   = os.startTimer(1)
+local statusTimer  = os.startTimer(0.5)
+
+-- ---- Event loop -------------------------------------------------------------
 
 while true do
-    local e, p, p2, p3 = os.pullEvent()
+    local e, p1, p2, p3 = os.pullEvent()
 
-    if e == "key" then
-        if p == keys.w or p == keys.up then
-            if nOption > 1 then nOption = nOption - 1; drawMenu() end
-        elseif p == keys.s or p == keys.down then
-            if nOption < #menuOptions then nOption = nOption + 1; drawMenu() end
-        elseif p == keys.enter then break end
+    if e == "timer" then
+        if p1 == clockTimer then
+            drawHeader()
+            clockTimer = os.startTimer(1)
+        elseif p1 == statusTimer then
+            drawStatus()
+            statusTimer = os.startTimer(0.5)
+        end
+
+    -- React to TARDIS events immediately
+    elseif e == "onTakeOff" or e == "onLand" or e == "onCrashed"
+        or e == "onDoorOpened"  or e == "onDoorClosed"
+        or e == "onShellChanged" or e == "onTardisEntered" then
+        drawStatus()
 
     elseif e == "mouse_click" then
         local mx, my = p2, p3
-        for i, r in ipairs(buttonRegions) do
-            if mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2 then
-                nOption = i; drawMenu(); sleep(0.08); break
+        if my == h - 1 then
+            for i, bounds in ipairs(navBounds) do
+                if mx >= bounds[1] and mx <= bounds[2] then
+                    navActions[i]()
+                    clockTimer  = os.startTimer(1)
+                    statusTimer = os.startTimer(0.5)
+                    break
+                end
             end
         end
-        break
 
-    elseif e == "timer" and p == timerID then
-        drawHeader()
-        timerID = os.startTimer(1)
+    elseif e == "key" then
+        local numKeys = {
+            keys.one, keys.two, keys.three, keys.four, keys.five
+        }
+        for i, k in ipairs(numKeys) do
+            if p1 == k then
+                navActions[i]()
+                clockTimer  = os.startTimer(1)
+                statusTimer = os.startTimer(0.5)
+                break
+            end
+        end
     end
-end
-
-term.setBackgroundColor(colors.black)
-term.clear()
-
-if     nOption == 1 then shell.run("os/.command")
-elseif nOption == 2 then shell.run("os/.programs")
-elseif nOption == 3 then shell.run("os/.settings")
-elseif nOption == 4 then os.shutdown()
-else                     shell.run("os/.UninstallDialog")
 end
