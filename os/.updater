@@ -1,25 +1,38 @@
 -- PunOS Updater
--- Incremental updates (gated by version.json commits), rollback, updater-safety guard
+-- Incremental updates gated by version.json commits, rollback, kernel awareness
 
 os.pullEvent = os.pullEventRaw
 
 local UI = dofile("/os/loadTheme.lua")
 local w, h = term.getSize()
 
+-- ---- Read installed kernel --------------------------------------------------
+
+local LOCAL_KERNEL = "/.punos_kernel"
+local kernel = "main"
+if fs.exists(LOCAL_KERNEL) then
+    local kf = fs.open(LOCAL_KERNEL, "r")
+    kernel = kf.readAll():gsub("%s+", "")
+    kf.close()
+end
+local isTardis = (kernel == "tardis")
+
+-- ---- Constants --------------------------------------------------------------
+
 local REPO_RAW       = "https://raw.githubusercontent.com/Puntaro-CC/PunOS-CC/"
-local RAW_MAIN       = REPO_RAW .. "main/"
+local RAW_BRANCH     = REPO_RAW .. kernel .. "/"
+local RAW_TARDIS     = REPO_RAW .. "tardis/"
 local API_BASE       = "https://api.github.com/repos/Puntaro-CC/PunOS-CC/"
-local API_VER_LATEST = API_BASE .. "commits?path=version.json&per_page=1"
-local API_VER_HIST   = API_BASE .. "commits?path=version.json&per_page=20"
+local API_VER_LATEST = API_BASE .. "commits?path=version.json&per_page=1&sha=" .. kernel
+local API_VER_HIST   = API_BASE .. "commits?path=version.json&per_page=20&sha=" .. kernel
+local API_TARDIS_HIST= API_BASE .. "commits?path=version.json&per_page=20&sha=tardis"
 local API_COMPARE    = API_BASE .. "compare/"
 local LOCAL_VER      = "/.punos_version"
 local LOCAL_SHA      = "/.punos_sha"
 local LOCAL_CACHE    = "/.punos_files_cache"
 
--- .updater is NEVER replaced by the updater itself, forward or backward.
--- Use the installer to update the updater.
-local UPDATER_REPO_PATH  = "os/.updater"   -- path as GitHub reports it in diffs
-local UPDATER_LOCAL_PATH = "/os/.updater"  -- path on the local filesystem
+local UPDATER_REPO_PATH  = "os/.updater"
+local UPDATER_LOCAL_PATH = "/os/.updater"
 
 -- ---- Helpers ----------------------------------------------------------------
 
@@ -30,7 +43,7 @@ local function drawHeader()
     term.write("PunOS")
     term.setCursorPos(2, 2)
     term.setTextColor(UI.subtext)
-    term.write("Update Manager")
+    term.write("Update Manager  [" .. kernel .. " kernel]")
     local info = "ID:" .. os.getComputerID()
     term.setCursorPos(w - #info - 1, 2)
     term.setTextColor(UI.subtext)
@@ -39,7 +52,7 @@ end
 
 local function drawTabs(active)
     paintutils.drawFilledBox(1, 3, w, 3, UI.border)
-    local tabs   = { " Updates ", " History " }
+    local tabs   = { " Updates ", " History ", " TARDIS History " }
     local bounds = {}
     local x      = 2
     for i, label in ipairs(tabs) do
@@ -151,7 +164,6 @@ local function fetchVersionAtSHA(sha)
 end
 
 -- ---- Confirm dialog ---------------------------------------------------------
--- Returns true if confirmed, false if cancelled.
 
 local function confirmDialog(lines, yesLabel, noLabel)
     yesLabel = yesLabel or " Yes, proceed "
@@ -176,11 +188,13 @@ local function confirmDialog(lines, yesLabel, noLabel)
 
     paintutils.drawFilledBox(yesX, btnY, yesX + #yesLabel - 1, btnY, UI.error)
     term.setCursorPos(yesX, btnY)
+    term.setBackgroundColor(UI.error)
     term.setTextColor(UI.background)
     term.write(yesLabel)
 
     paintutils.drawFilledBox(noX, btnY, noX + #noLabel - 1, btnY, UI.primary)
     term.setCursorPos(noX, btnY)
+    term.setBackgroundColor(UI.primary)
     term.setTextColor(UI.background)
     term.write(noLabel)
 
@@ -210,8 +224,6 @@ drawTabs(1)
 status(5, "Checking for updates...", UI.subtext)
 status(6, "Connecting to GitHub...", UI.subtext)
 
--- Fetch the latest commit that touched version.json specifically.
--- Random file saves in GitHub won't trigger updates; only a version bump will.
 local verCommitBody = httpGet(API_VER_LATEST)
 if not verCommitBody then
     clearBody()
@@ -240,16 +252,14 @@ if verCommits[1].commit and verCommits[1].commit.message then
         :gsub("\\n", "\n"):gsub("\\t", "  "):gsub('\\"', '"')
 end
 
--- files.json is required to update. If it can't be fetched we stay in the
--- updater but disable the Update button rather than booting back to .menu.
 status(6, "Fetching file list...", UI.subtext)
-local filesBody = httpGet(RAW_MAIN .. "files.json")
+local filesBody = httpGet(RAW_BRANCH .. "files.json")
 local filesOk   = (filesBody ~= nil)
 local FILES     = filesOk and parseFiles(filesBody) or {}
 
 local localVersion  = readLocalVersion()
 local localSHA      = readLocalSHA()
-local remoteVersion = jsonStr(httpGet(RAW_MAIN .. "version.json") or "", "version") or "?"
+local remoteVersion = jsonStr(httpGet(RAW_BRANCH .. "version.json") or "", "version") or "?"
 local upToDate      = (latestSHA ~= nil and latestSHA == localSHA)
 
 -- ---- Tab state --------------------------------------------------------------
@@ -315,19 +325,20 @@ local function drawNotes()
 end
 
 local function drawButtons()
-    -- Update button: grayed out entirely if files.json unavailable
     local updateActive = filesOk
     paintutils.drawFilledBox(ux, h - 1, ux + #updateLabel - 1, h - 1,
         (not updateActive or upToDate) and UI.border or UI.primary)
     term.setCursorPos(ux, h - 1)
+    term.setBackgroundColor((not updateActive or upToDate) and UI.border or UI.primary)
     term.setTextColor(
-        (not updateActive) and UI.subtext or
-        upToDate           and UI.subtext or
+        not updateActive and UI.subtext or
+        upToDate         and UI.subtext or
         UI.background)
     term.write(updateLabel)
 
     paintutils.drawFilledBox(bx, h - 1, bx + #backLabel - 1, h - 1, UI.border)
     term.setCursorPos(bx, h - 1)
+    term.setBackgroundColor(UI.border)
     term.setTextColor(UI.text)
     term.write(backLabel)
 end
@@ -370,7 +381,7 @@ local function drawUpdatesTab()
     term.write("Scroll: Notes  |  Backspace: Back")
 end
 
--- ---- History Tab ------------------------------------------------------------
+-- ---- History Tab (current kernel) ------------------------------------------
 
 local histEntries  = nil
 local histScroll   = 0
@@ -380,22 +391,22 @@ local HIST_END     = h - 3
 local HIST_VIS     = HIST_END - HIST_START + 1
 local HIST_INSTALL = " Install This Version "
 
-local function loadHistory()
+local function loadHistoryFrom(apiUrl)
     clearBody()
     status(5, "Loading version history...", UI.subtext)
 
-    local body = httpGet(API_VER_HIST)
+    local body = httpGet(apiUrl)
     if not body then
         status(5, "Could not fetch history.", UI.error)
         sleep(1.5)
-        return false
+        return nil
     end
 
     local ok2, data = pcall(textutils.unserialiseJSON, body)
     if not ok2 or not data then
         status(5, "Could not parse history.", UI.error)
         sleep(1.5)
-        return false
+        return nil
     end
 
     local raw = {}
@@ -410,18 +421,16 @@ local function loadHistory()
         table.insert(raw, { sha = sha, msg = msg, date = date })
     end
 
-    -- Fetch version.json at each SHA for human-readable version numbers.
-    -- One HTTP request per entry; progress bar shown while loading.
     status(5, "Fetching version numbers...", UI.subtext)
     local barW = w - 4
     local barX = 3
     local barY = 7
     paintutils.drawFilledBox(barX, barY, barX + barW - 1, barY, UI.border)
 
-    histEntries = {}
+    local entries = {}
     for i, entry in ipairs(raw) do
         local ver = fetchVersionAtSHA(entry.sha) or ("?" .. entry.sha:sub(1, 7))
-        table.insert(histEntries, {
+        table.insert(entries, {
             sha     = entry.sha,
             version = ver,
             msg     = entry.msg,
@@ -439,25 +448,15 @@ local function loadHistory()
         term.write(pct)
     end
 
-    return true
+    return entries
 end
 
-local function drawHistoryTab()
-    clearBody()
-
-    if not histEntries then
-        if not loadHistory() then return end
-    end
-
-    paintutils.drawFilledBox(1, HIST_START - 1, w, HIST_START - 1, UI.border)
-    term.setCursorPos(2, HIST_START - 1)
-    term.setTextColor(UI.primary)
-    term.write("Version History")
-
-    for i = 1, HIST_VIS do
-        local idx   = i + histScroll
-        local entry = histEntries and histEntries[idx]
-        local y     = HIST_START + i - 1
+local function drawHistoryList(entries, scroll, selected, startY, endY, canInstall, wrongKernel)
+    local vis = endY - startY + 1
+    for i = 1, vis do
+        local idx   = i + scroll
+        local entry = entries and entries[idx]
+        local y     = startY + i - 1
 
         term.setCursorPos(1, y)
         term.setBackgroundColor(UI.background)
@@ -465,11 +464,12 @@ local function drawHistoryTab()
 
         if entry then
             local isInstalled = (entry.sha == localSHA)
-            local isSel       = (histSelected == idx)
+            local isSel       = (selected == idx)
 
             if isSel then
                 paintutils.drawFilledBox(1, y, w, y, UI.primary)
                 term.setCursorPos(2, y)
+                term.setBackgroundColor(UI.primary)
                 term.setTextColor(UI.background)
             elseif isInstalled then
                 term.setCursorPos(2, y)
@@ -486,14 +486,14 @@ local function drawHistoryTab()
         end
     end
 
-    if histScroll > 0 then
-        term.setCursorPos(w - 5, HIST_START)
+    if scroll > 0 then
+        term.setCursorPos(w - 5, startY)
         term.setBackgroundColor(UI.background)
         term.setTextColor(UI.subtext)
         term.write("[^ up]")
     end
-    if histEntries and histScroll + HIST_VIS < #histEntries then
-        term.setCursorPos(w - 7, HIST_END)
+    if entries and scroll + vis < #entries then
+        term.setCursorPos(w - 7, endY)
         term.setBackgroundColor(UI.background)
         term.setTextColor(UI.subtext)
         term.write("[v more]")
@@ -501,14 +501,39 @@ local function drawHistoryTab()
 
     paintutils.drawFilledBox(1, h - 2, w, h - 2, UI.border)
 
-    -- Install button grayed out if files.json unavailable
-    local canInstall = (histSelected ~= nil and filesOk)
     local ix = math.floor((w - #HIST_INSTALL) / 2)
-    paintutils.drawFilledBox(ix, h - 1, ix + #HIST_INSTALL - 1, h - 1,
-        canInstall and UI.primary or UI.border)
-    term.setCursorPos(ix, h - 1)
-    term.setTextColor(canInstall and UI.background or UI.subtext)
-    term.write(HIST_INSTALL)
+    if wrongKernel then
+        -- Hard block: grayed install button
+        paintutils.drawFilledBox(ix, h - 1, ix + #HIST_INSTALL - 1, h - 1, UI.border)
+        term.setCursorPos(ix, h - 1)
+        term.setBackgroundColor(UI.border)
+        term.setTextColor(UI.subtext)
+        term.write(HIST_INSTALL)
+    else
+        local active = (selected ~= nil and canInstall)
+        paintutils.drawFilledBox(ix, h - 1, ix + #HIST_INSTALL - 1, h - 1,
+            active and UI.primary or UI.border)
+        term.setCursorPos(ix, h - 1)
+        term.setBackgroundColor(active and UI.primary or UI.border)
+        term.setTextColor(active and UI.background or UI.subtext)
+        term.write(HIST_INSTALL)
+    end
+end
+
+local function drawHistoryTab()
+    clearBody()
+
+    if not histEntries then
+        histEntries = loadHistoryFrom(API_VER_HIST)
+        if not histEntries then return end
+    end
+
+    paintutils.drawFilledBox(1, HIST_START - 1, w, HIST_START - 1, UI.border)
+    term.setCursorPos(2, HIST_START - 1)
+    term.setTextColor(UI.primary)
+    term.write("Version History  [" .. kernel .. " kernel]")
+
+    drawHistoryList(histEntries, histScroll, histSelected, HIST_START, HIST_END, filesOk, false)
 
     term.setCursorPos(2, h)
     term.setBackgroundColor(UI.background)
@@ -516,22 +541,65 @@ local function drawHistoryTab()
     if not filesOk then
         term.write("files.json unavailable — installs disabled")
     else
-        term.write("Up/Down or click to select  |  Enter to install  |  * = installed")
+        term.write("Up/Down or click to select  |  Enter: install  |  * = installed")
+    end
+end
+
+-- ---- TARDIS History Tab -----------------------------------------------------
+
+local tardisEntries  = nil
+local tardisScroll   = 0
+local tardisSelected = nil
+-- TARDIS tab always warns if not on tardis kernel.
+-- If on main kernel, install is hard-blocked.
+
+local function drawTardisTab()
+    clearBody()
+
+    if not tardisEntries then
+        tardisEntries = loadHistoryFrom(API_TARDIS_HIST)
+        if not tardisEntries then return end
+    end
+
+    -- Persistent warning banner for TARDIS tab
+    paintutils.drawFilledBox(1, HIST_START - 1, w, HIST_START - 1,
+        isTardis and UI.border or UI.error)
+    term.setCursorPos(2, HIST_START - 1)
+    if isTardis then
+        term.setTextColor(UI.primary)
+        term.write("Version History  [tardis kernel]")
+    else
+        term.setTextColor(UI.background)
+        term.write("TARDIS kernel  —  Requires Handles + TARDIS Refined")
+    end
+
+    drawHistoryList(tardisEntries, tardisScroll, tardisSelected, HIST_START, HIST_END,
+        filesOk, not isTardis)
+
+    term.setCursorPos(2, h)
+    term.setBackgroundColor(UI.background)
+    if not isTardis then
+        term.setTextColor(UI.error)
+        term.write("Wrong kernel — reinstall PunOS to switch kernels")
+    elseif not filesOk then
+        term.setTextColor(UI.subtext)
+        term.write("files.json unavailable — installs disabled")
+    else
+        term.setTextColor(UI.subtext)
+        term.write("Up/Down or click to select  |  Enter: install  |  * = installed")
     end
 end
 
 -- ---- doUpdate ---------------------------------------------------------------
 
-local function doUpdate(targetSHA, isRollback)
+local function doUpdate(targetSHA, isRollback, rawBase)
     clearBody()
     status(4, isRollback and "Rolling back..." or "Downloading updates...", UI.primary)
 
     local toDownload     = {}
     local toDelete       = {}
-    local rawBase        = REPO_RAW .. targetSHA .. "/"
     local updaterSkipped = false
 
-    -- Helper: filter .updater out of any file list
     local function filterUpdater(list)
         local out = {}
         for _, pair in ipairs(list) do
@@ -550,16 +618,14 @@ local function doUpdate(targetSHA, isRollback)
         if not snapFilesBody then
             status(5, "Could not fetch files.json at target SHA.", UI.error)
             sleep(2)
-            -- Redraw so we land back on the history tab cleanly
             term.setBackgroundColor(UI.background)
             term.clear()
             drawHeader()
             tabBounds = drawTabs(activeTab)
-            drawHistoryTab()
+            if activeTab == 2 then drawHistoryTab() else drawTardisTab() end
             return
         end
 
-        -- .updater is always excluded — even on rollback
         toDownload = filterUpdater(parseFiles(snapFilesBody))
 
         local snapMap = parseFilesAsMap(snapFilesBody)
@@ -572,10 +638,10 @@ local function doUpdate(targetSHA, isRollback)
 
     elseif localSHA == nil then
         toDownload = filterUpdater(FILES)
-        rawBase    = RAW_MAIN
+        rawBase    = RAW_BRANCH
 
     else
-        rawBase = RAW_MAIN
+        rawBase = RAW_BRANCH
         status(5, "Fetching diff...", UI.subtext)
         local compareBody = httpGet(API_COMPARE .. localSHA .. "..." .. targetSHA)
 
@@ -602,19 +668,14 @@ local function doUpdate(targetSHA, isRollback)
                     local repoPath = fileEntry.filename
                     local st       = fileEntry.status
 
-                    -- Check repo path directly — never trust fileMap for this,
-                    -- since the naive JSON regex can produce false matches.
                     if repoPath == UPDATER_REPO_PATH then
                         updaterSkipped = true
-
                     elseif st == "removed" then
                         local lp = oldFileMap[repoPath]
                         if lp then table.insert(toDelete, lp) end
-
                     elseif st == "added" or st == "modified" then
                         local lp = fileMap[repoPath]
                         if lp then table.insert(toDownload, { repoPath, lp }) end
-
                     elseif st == "renamed" then
                         if fileEntry.previous_filename
                         and fileEntry.previous_filename ~= UPDATER_REPO_PATH then
@@ -756,11 +817,8 @@ local function doUpdate(targetSHA, isRollback)
 end
 
 -- ---- Rollback confirm -------------------------------------------------------
--- Always shown before any rollback. Includes an extra warning line if
--- .updater differs at the target SHA (informational only — .updater is
--- never replaced regardless).
 
-local function confirmRollback(entry)
+local function confirmRollback(entry, rawBase)
     local remoteUpdater    = httpGet(REPO_RAW .. entry.sha .. "/os/.updater")
     local localUpdaterFile = fs.open(UPDATER_LOCAL_PATH, "r")
     local localUpdater     = localUpdaterFile and localUpdaterFile.readAll() or ""
@@ -787,6 +845,20 @@ local function confirmRollback(entry)
     return confirmDialog(lines, " Yes, roll back ", " Cancel ")
 end
 
+-- ---- Wrong kernel dialog ----------------------------------------------------
+
+local function wrongKernelDialog()
+    confirmDialog({
+        "  Wrong Kernel  ",
+        "",
+        "This version is from the TARDIS kernel.",
+        "Your computer is running the " .. kernel .. " kernel.",
+        "",
+        "To switch kernels, reinstall PunOS and",
+        "select the correct kernel at the start.",
+    }, " OK ", " OK ")
+end
+
 -- ---- Initial draw -----------------------------------------------------------
 
 term.setBackgroundColor(UI.background)
@@ -810,9 +882,12 @@ while true do
                     tabBounds = drawTabs(activeTab)
                     if activeTab == 1 then
                         drawUpdatesTab()
-                    else
+                    elseif activeTab == 2 then
                         histSelected = nil
                         drawHistoryTab()
+                    else
+                        tardisSelected = nil
+                        drawTardisTab()
                     end
                 end
             end
@@ -820,7 +895,7 @@ while true do
         elseif activeTab == 1 then
             if my == h - 1 then
                 if filesOk and mx >= ux and mx <= ux + #updateLabel - 1 then
-                    doUpdate(latestSHA, false); return
+                    doUpdate(latestSHA, false, RAW_BRANCH); return
                 elseif mx >= bx and mx <= bx + #backLabel - 1 then
                     break
                 end
@@ -830,22 +905,47 @@ while true do
             if my >= HIST_START and my <= HIST_END then
                 local idx = my - HIST_START + 1 + histScroll
                 if histEntries and histEntries[idx] then
-                    histSelected = idx
-                    drawHistoryTab()
+                    histSelected = idx; drawHistoryTab()
                 end
             elseif my == h - 1 and histSelected and filesOk then
                 local ix = math.floor((w - #HIST_INSTALL) / 2)
                 if mx >= ix and mx <= ix + #HIST_INSTALL - 1 then
                     local entry = histEntries[histSelected]
                     if entry then
-                        local confirmed = confirmRollback(entry)
-                        if confirmed then doUpdate(entry.sha, true); return end
-                        -- Redraw after dialog regardless
+                        if confirmRollback(entry, RAW_BRANCH) then
+                            doUpdate(entry.sha, true, REPO_RAW .. entry.sha .. "/"); return
+                        end
                         term.setBackgroundColor(UI.background)
-                        term.clear()
-                        drawHeader()
-                        tabBounds = drawTabs(activeTab)
-                        drawHistoryTab()
+                        term.clear(); drawHeader()
+                        tabBounds = drawTabs(activeTab); drawHistoryTab()
+                    end
+                end
+            end
+
+        elseif activeTab == 3 then
+            if my >= HIST_START and my <= HIST_END then
+                local idx = my - HIST_START + 1 + tardisScroll
+                if tardisEntries and tardisEntries[idx] then
+                    tardisSelected = idx; drawTardisTab()
+                end
+            elseif my == h - 1 then
+                local ix = math.floor((w - #HIST_INSTALL) / 2)
+                if mx >= ix and mx <= ix + #HIST_INSTALL - 1 then
+                    if not isTardis then
+                        wrongKernelDialog()
+                        term.setBackgroundColor(UI.background)
+                        term.clear(); drawHeader()
+                        tabBounds = drawTabs(activeTab); drawTardisTab()
+                    elseif tardisSelected and filesOk then
+                        local entry = tardisEntries[tardisSelected]
+                        if entry then
+                            if confirmRollback(entry, RAW_TARDIS) then
+                                doUpdate(entry.sha, true, REPO_RAW .. entry.sha .. "/"); return
+                            end
+                            term.setBackgroundColor(UI.background)
+                            term.clear(); drawHeader()
+                            tabBounds = drawTabs(activeTab); drawTardisTab()
+                        end
                     end
                 end
             end
@@ -864,11 +964,17 @@ while true do
             elseif p1 == -1 and histScroll > 0 then
                 histScroll = histScroll - 1; drawHistoryTab()
             end
+        elseif activeTab == 3 and tardisEntries then
+            if p1 == 1 and tardisScroll + HIST_VIS < #tardisEntries then
+                tardisScroll = tardisScroll + 1; drawTardisTab()
+            elseif p1 == -1 and tardisScroll > 0 then
+                tardisScroll = tardisScroll - 1; drawTardisTab()
+            end
         end
 
     elseif e == "key" then
         if p1 == keys.backspace then
-            if activeTab == 2 then
+            if activeTab > 1 then
                 activeTab = 1
                 tabBounds = drawTabs(activeTab)
                 drawUpdatesTab()
@@ -882,7 +988,7 @@ while true do
             elseif p1 == keys.down and scrollOff + visLines < #noteLines then
                 scrollOff = scrollOff + 1; drawNotes()
             elseif p1 == keys.enter and filesOk then
-                doUpdate(latestSHA, false); return
+                doUpdate(latestSHA, false, RAW_BRANCH); return
             end
 
         elseif activeTab == 2 and histEntries then
@@ -891,7 +997,7 @@ while true do
                     histSelected = histSelected - 1
                     if histSelected <= histScroll then histScroll = histSelected - 1 end
                     drawHistoryTab()
-                elseif not histSelected and #histEntries > 0 then
+                elseif not histSelected then
                     histSelected = 1; drawHistoryTab()
                 end
             elseif p1 == keys.down then
@@ -901,19 +1007,56 @@ while true do
                         histScroll = histSelected - HIST_VIS
                     end
                     drawHistoryTab()
-                elseif not histSelected and #histEntries > 0 then
+                elseif not histSelected then
                     histSelected = 1; drawHistoryTab()
                 end
             elseif p1 == keys.enter and histSelected and filesOk then
                 local entry = histEntries[histSelected]
                 if entry then
-                    local confirmed = confirmRollback(entry)
-                    if confirmed then doUpdate(entry.sha, true); return end
+                    if confirmRollback(entry, RAW_BRANCH) then
+                        doUpdate(entry.sha, true, REPO_RAW .. entry.sha .. "/"); return
+                    end
                     term.setBackgroundColor(UI.background)
-                    term.clear()
-                    drawHeader()
-                    tabBounds = drawTabs(activeTab)
-                    drawHistoryTab()
+                    term.clear(); drawHeader()
+                    tabBounds = drawTabs(activeTab); drawHistoryTab()
+                end
+            end
+
+        elseif activeTab == 3 and tardisEntries then
+            if p1 == keys.up then
+                if tardisSelected and tardisSelected > 1 then
+                    tardisSelected = tardisSelected - 1
+                    if tardisSelected <= tardisScroll then tardisScroll = tardisSelected - 1 end
+                    drawTardisTab()
+                elseif not tardisSelected then
+                    tardisSelected = 1; drawTardisTab()
+                end
+            elseif p1 == keys.down then
+                if tardisSelected and tardisSelected < #tardisEntries then
+                    tardisSelected = tardisSelected + 1
+                    if tardisSelected > tardisScroll + HIST_VIS then
+                        tardisScroll = tardisSelected - HIST_VIS
+                    end
+                    drawTardisTab()
+                elseif not tardisSelected then
+                    tardisSelected = 1; drawTardisTab()
+                end
+            elseif p1 == keys.enter then
+                if not isTardis then
+                    wrongKernelDialog()
+                    term.setBackgroundColor(UI.background)
+                    term.clear(); drawHeader()
+                    tabBounds = drawTabs(activeTab); drawTardisTab()
+                elseif tardisSelected and filesOk then
+                    local entry = tardisEntries[tardisSelected]
+                    if entry then
+                        if confirmRollback(entry, RAW_TARDIS) then
+                            doUpdate(entry.sha, true, REPO_RAW .. entry.sha .. "/"); return
+                        end
+                        term.setBackgroundColor(UI.background)
+                        term.clear(); drawHeader()
+                        tabBounds = drawTabs(activeTab); drawTardisTab()
+                    end
                 end
             end
         end
