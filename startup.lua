@@ -3,9 +3,9 @@
 -- Subsequent boots: quick wake animation
 
 local w, h = term.getSize()
-local BOOT_FLAG   = "/.punos_booted"
-local THEME_FILE  = "/.theme"
-local VER_FILE    = "/.punos_version"
+local BOOT_FLAG  = "/.punos_booted"
+local THEME_FILE = "/.theme"
+local VER_FILE   = "/.punos_version"
 
 local function readVersion()
     if not fs.exists(VER_FILE) then return "?" end
@@ -26,7 +26,8 @@ local function loadTheme()
     return dofile("/os/loadTheme.lua")
 end
 
--- ---- Quick wake animation (subsequent boots) ----
+-- ---- Quick wake animation (subsequent boots) --------------------------------
+
 local function quickBoot()
     local UI = loadTheme()
 
@@ -64,7 +65,8 @@ local function quickBoot()
     term.clear()
 end
 
--- ---- First boot: full logo animation + theme selection ----
+-- ---- First boot: logo animation + theme selection ---------------------------
+
 local function firstBoot()
     local logoLines = {
         " ____  _   _ _   _  ___  ____  ",
@@ -106,7 +108,8 @@ local function firstBoot()
 
     sleep(0.6)
 
-    -- ---- Theme selection ----
+    -- ---- Theme selection ----------------------------------------------------
+
     term.setBackgroundColor(colors.black)
     term.clear()
 
@@ -120,58 +123,73 @@ local function firstBoot()
     term.write(prompt)
 
     local themes = {
-        {key="classic",  name="Classic",  primary=colors.orange,  border=colors.gray},
-        {key="popos",    name="Pop_OS",   primary=colors.purple,  border=colors.gray},
-        {key="hacker",   name="Hacker",   primary=colors.lime,    border=colors.gray},
-        {key="ocean",    name="Ocean",    primary=colors.cyan,    border=colors.gray},
-        {key="midnight", name="Midnight", primary=colors.blue,    border=colors.gray},
+        { key="classic", name="Classic", primary=colors.orange,    secondary=colors.yellow,    background=colors.black, text=colors.white,     subtext=colors.lightGray, border=colors.gray    },
+        { key="factory", name="Factory", primary=colors.cyan,      secondary=colors.lightBlue, background=colors.white, text=colors.black,     subtext=colors.gray,      border=colors.lightGray },
+        { key="coral",   name="Coral",   primary=colors.orange,    secondary=colors.magenta,   background=colors.black, text=colors.white,     subtext=colors.lightGray, border=colors.brown   },
+        { key="copper",  name="Copper",  primary=colors.orange,    secondary=colors.yellow,    background=colors.black, text=colors.yellow,    subtext=colors.lime,      border=colors.green   },
+        { key="toyota",  name="Toyota",  primary=colors.orange,    secondary=colors.lightBlue, background=colors.black, text=colors.white,     subtext=colors.lightGray, border=colors.gray    },
+        { key="tardis",  name="TARDIS",  primary=colors.cyan,      secondary=colors.lightBlue, background=colors.black, text=colors.lightBlue, subtext=colors.blue,      border=colors.blue    },
     }
 
     local selected = 1
-    local tileW   = math.floor((w - 2) / #themes)
+
+    -- Two rows of tiles: 3 per row
+    local COLS    = 3
+    local tileW   = math.floor((w - 2) / COLS)
+    local tileH   = 5
     local tStartY = 5
     local tBtns   = {}
 
     local function drawTiles()
         tBtns = {}
         for i, t in ipairs(themes) do
-            local x1 = 2 + (i - 1) * tileW
-            local x2 = x1 + tileW - 1
-            local y1, y2 = tStartY, tStartY + 4
+            local col = (i - 1) % COLS
+            local row = math.floor((i - 1) / COLS)
+            local x1  = 2 + col * tileW
+            local x2  = x1 + tileW - 1
+            local y1  = tStartY + row * (tileH + 1)
+            local y2  = y1 + tileH - 1
+
             paintutils.drawFilledBox(x1, y1, x2, y2, t.border)
             paintutils.drawFilledBox(x1, y1, x2, y1, t.primary)
+
             term.setCursorPos(x1 + 1, y1 + 1)
             term.setBackgroundColor(t.border)
             term.setTextColor(t.primary)
             local nm = t.name
             if #nm > tileW - 2 then nm = nm:sub(1, tileW - 3) end
             term.write(nm)
+
             term.setCursorPos(x1 + 1, y1 + 2)
-            term.setTextColor(colors.white)
+            term.setTextColor(t.text)
             term.write("Text")
+
             term.setCursorPos(x1 + 1, y1 + 3)
-            term.setTextColor(colors.lightGray)
+            term.setTextColor(t.subtext)
             term.write("Sub")
+
             if i == selected then
                 paintutils.drawBox(x1, y1, x2, y2, t.primary)
             end
+
             tBtns[i] = {x1=x1, y1=y1, x2=x2, y2=y2}
         end
     end
 
     local function drawConfirm()
-        local row = tStartY + 7
-        local hint = "Left/Right or click to choose  |  Enter to confirm"
+        local row = tStartY + 2 * (tileH + 1) + 1
+        local hint = "Arrow keys or click  |  Enter to confirm"
         term.setCursorPos(math.floor((w - #hint) / 2), row)
         term.setBackgroundColor(colors.black)
         term.setTextColor(colors.lightGray)
         term.write(hint)
+
         local lbl = " Confirm "
         local cx  = math.floor((w - #lbl) / 2)
         local cy  = row + 2
         paintutils.drawFilledBox(cx, cy, cx + #lbl - 1, cy, themes[selected].primary)
         term.setCursorPos(cx, cy)
-        term.setTextColor(colors.black)
+        term.setTextColor(themes[selected].background ~= colors.black and colors.black or colors.white)
         term.write(lbl)
         return {x1=cx, y1=cy, x2=cx+#lbl-1, y2=cy}
     end
@@ -184,6 +202,8 @@ local function firstBoot()
         if e == "key" then
             if p1 == keys.left  or p1 == keys.a then if selected > 1 then selected = selected - 1 end end
             if p1 == keys.right or p1 == keys.d then if selected < #themes then selected = selected + 1 end end
+            if p1 == keys.up    or p1 == keys.w then if selected > COLS then selected = selected - COLS end end
+            if p1 == keys.down  or p1 == keys.s then if selected + COLS <= #themes then selected = selected + COLS end end
             if p1 == keys.enter then break end
             drawTiles(); confirmBtn = drawConfirm()
         elseif e == "mouse_click" then
@@ -201,13 +221,7 @@ local function firstBoot()
     f.write(themes[selected].key)
     f.close()
 
-    -- Inline the selected theme colors directly -- theme.lua may not exist yet
-    local UI = {
-        primary    = themes[selected].primary,
-        border     = themes[selected].border,
-        subtext    = colors.lightGray,
-        background = colors.black,
-    }
+    local UI = themes[selected]
     term.setBackgroundColor(colors.black)
     term.clear()
 
@@ -226,7 +240,7 @@ local function firstBoot()
     local barW = math.floor(w * 0.7)
     local barX = math.floor((w - barW) / 2)
     local barY = math.floor(h / 2) + 1
-    local msgY  = barY - 1
+    local msgY = barY - 1
 
     paintutils.drawFilledBox(barX, barY, barX + barW - 1, barY, UI.border)
 
@@ -251,7 +265,8 @@ local function firstBoot()
     term.clear()
 end
 
--- ---- Entry point ----
+-- ---- Entry point ------------------------------------------------------------
+
 if fs.exists(BOOT_FLAG) then
     quickBoot()
 else
