@@ -123,12 +123,12 @@ local function firstBoot()
     term.write(prompt)
 
     local themes = {
-        { key="classic", name="Classic", primary=colors.orange,    secondary=colors.yellow,    background=colors.black, text=colors.white,     subtext=colors.lightGray, border=colors.gray    },
-        { key="factory", name="Factory", primary=colors.cyan,      secondary=colors.lightBlue, background=colors.white, text=colors.black,     subtext=colors.gray,      border=colors.lightGray },
-        { key="coral",   name="Coral",   primary=colors.orange,    secondary=colors.magenta,   background=colors.black, text=colors.white,     subtext=colors.lightGray, border=colors.brown   },
-        { key="copper",  name="Copper",  primary=colors.orange,    secondary=colors.yellow,    background=colors.black, text=colors.yellow,    subtext=colors.lime,      border=colors.green   },
-        { key="toyota",  name="Toyota",  primary=colors.orange,    secondary=colors.lightBlue, background=colors.black, text=colors.white,     subtext=colors.lightGray, border=colors.gray    },
-        { key="tardis",  name="TARDIS",  primary=colors.cyan,      secondary=colors.lightBlue, background=colors.black, text=colors.lightBlue, subtext=colors.blue,      border=colors.blue    },
+        { key="classic", name="Classic", primary=colors.orange,  secondary=colors.yellow,    background=colors.black, text=colors.white,     subtext=colors.lightGray, border=colors.gray      },
+        { key="factory", name="Factory", primary=colors.cyan,    secondary=colors.lightBlue, background=colors.white, text=colors.black,     subtext=colors.gray,      border=colors.lightGray },
+        { key="coral",   name="Coral",   primary=colors.magenta, secondary=colors.pink,      background=colors.black, text=colors.white,     subtext=colors.pink,      border=colors.orange    },
+        { key="copper",  name="Copper",  primary=colors.orange,  secondary=colors.yellow,    background=colors.black, text=colors.yellow,    subtext=colors.lime,      border=colors.green     },
+        { key="toyota",  name="Toyota",  primary=colors.orange,  secondary=colors.lightBlue, background=colors.black, text=colors.lightGray, subtext=colors.lightBlue, border=colors.gray      },
+        { key="tardis",  name="TARDIS",  primary=colors.cyan,    secondary=colors.lightBlue, background=colors.black, text=colors.white,     subtext=colors.blue,      border=colors.gray      },
     }
 
     local selected = 1
