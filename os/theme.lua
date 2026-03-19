@@ -1,11 +1,15 @@
-﻿-- PunOS Theme Module
+-- PunOS Theme Module
 -- Returns the active UI color table based on /.theme
 
 local THEME_FILE = "/.theme"
 
 local themes = {
+
+    -- ---- PunOS Classic ------------------------------------------------------
+    -- Black, gray and gold. The default PunOS experience.
+
     classic = {
-        themeName  = "Classic",
+        themeName  = "PunOS Classic",
         primary    = colors.orange,
         secondary  = colors.yellow,
         background = colors.black,
@@ -17,88 +21,130 @@ local themes = {
         fgDark     = colors.black,
         btnNum     = colors.gray,
         btnOp      = colors.orange,
-        btnFn      = colors.blue,
-        btnSpec    = colors.cyan,
+        btnFn      = colors.yellow,
+        btnSpec    = colors.lightGray,
         btnClear   = colors.red,
-        btnEqual   = colors.lime,
-        selected   = colors.white,
+        btnEqual   = colors.orange,
+        selected   = colors.orange,
     },
-    popos = {
-        themeName  = "Pop_OS",
-        primary    = colors.purple,
+
+    -- ---- Factory ------------------------------------------------------------
+    -- Light mode. Crisp white and cyan, evoking the 1st Doctor's clinical,
+    -- hexagonal console room.
+
+    factory = {
+        themeName  = "Factory",
+        primary    = colors.cyan,
+        secondary  = colors.lightBlue,
+        background = colors.white,
+        text       = colors.black,
+        subtext    = colors.gray,
+        border     = colors.lightGray,
+        success    = colors.green,
+        error      = colors.red,
+        fgDark     = colors.white,
+        btnNum     = colors.lightGray,
+        btnOp      = colors.cyan,
+        btnFn      = colors.lightBlue,
+        btnSpec    = colors.gray,
+        btnClear   = colors.red,
+        btnEqual   = colors.cyan,
+        selected   = colors.cyan,
+    },
+
+    -- ---- Coral --------------------------------------------------------------
+    -- Warm organic tones from the 9th and 10th Doctor's coral console room.
+    -- Orange primary, magenta accents, dark background.
+
+    coral = {
+        themeName  = "Coral",
+        primary    = colors.orange,
         secondary  = colors.magenta,
         background = colors.black,
         text       = colors.white,
         subtext    = colors.lightGray,
-        border     = colors.gray,
+        border     = colors.brown,
         success    = colors.lime,
         error      = colors.red,
         fgDark     = colors.black,
-        btnNum     = colors.gray,
-        btnOp      = colors.purple,
+        btnNum     = colors.brown,
+        btnOp      = colors.orange,
         btnFn      = colors.magenta,
-        btnSpec    = colors.cyan,
+        btnSpec    = colors.pink,
+        btnClear   = colors.red,
+        btnEqual   = colors.orange,
+        selected   = colors.orange,
+    },
+
+    -- ---- Copper -------------------------------------------------------------
+    -- Orange, gold and green. Warm industrial palette.
+
+    copper = {
+        themeName  = "Copper",
+        primary    = colors.orange,
+        secondary  = colors.yellow,
+        background = colors.black,
+        text       = colors.yellow,
+        subtext    = colors.lime,
+        border     = colors.green,
+        success    = colors.lime,
+        error      = colors.red,
+        fgDark     = colors.black,
+        btnNum     = colors.green,
+        btnOp      = colors.orange,
+        btnFn      = colors.yellow,
+        btnSpec    = colors.lime,
         btnClear   = colors.red,
         btnEqual   = colors.lime,
-        selected   = colors.white,
+        selected   = colors.yellow,
     },
-    hacker = {
-        themeName  = "Hacker",
-        primary    = colors.lime,
-        secondary  = colors.green,
+
+    -- ---- Toyota -------------------------------------------------------------
+    -- Gray, orange and blue. Clean and modern.
+
+    toyota = {
+        themeName  = "Toyota",
+        primary    = colors.orange,
+        secondary  = colors.lightBlue,
         background = colors.black,
         text       = colors.white,
-        subtext    = colors.green,
+        subtext    = colors.lightGray,
         border     = colors.gray,
         success    = colors.lime,
         error      = colors.red,
         fgDark     = colors.black,
         btnNum     = colors.gray,
-        btnOp      = colors.lime,
-        btnFn      = colors.green,
+        btnOp      = colors.orange,
+        btnFn      = colors.lightBlue,
         btnSpec    = colors.cyan,
         btnClear   = colors.red,
-        btnEqual   = colors.lime,
-        selected   = colors.white,
+        btnEqual   = colors.lightBlue,
+        selected   = colors.lightBlue,
     },
-    ocean = {
-        themeName  = "Ocean",
+
+    -- ---- TARDIS -------------------------------------------------------------
+    -- Deep blue and cyan. Designed for the TARDIS kernel console.
+
+    tardis = {
+        themeName  = "TARDIS",
         primary    = colors.cyan,
         secondary  = colors.lightBlue,
         background = colors.black,
-        text       = colors.white,
-        subtext    = colors.lightGray,
-        border     = colors.gray,
+        text       = colors.lightBlue,
+        subtext    = colors.blue,
+        border     = colors.blue,
         success    = colors.lime,
         error      = colors.red,
         fgDark     = colors.black,
-        btnNum     = colors.gray,
+        btnNum     = colors.blue,
         btnOp      = colors.cyan,
-        btnFn      = colors.lightBlue,
-        btnSpec    = colors.blue,
-        btnClear   = colors.red,
-        btnEqual   = colors.lime,
-        selected   = colors.white,
-    },
-    midnight = {
-        themeName  = "Midnight",
-        primary    = colors.blue,
-        secondary  = colors.lightBlue,
-        background = colors.black,
-        text       = colors.white,
-        subtext    = colors.lightGray,
-        border     = colors.gray,
-        success    = colors.lime,
-        error      = colors.red,
-        fgDark     = colors.black,
-        btnNum     = colors.gray,
-        btnOp      = colors.blue,
         btnFn      = colors.lightBlue,
         btnSpec    = colors.cyan,
         btnClear   = colors.red,
-        btnEqual   = colors.lime,
-        selected   = colors.white,
+        btnEqual   = colors.cyan,
+        selected   = colors.cyan,
     },
+
 }
 
 local name = "classic"
