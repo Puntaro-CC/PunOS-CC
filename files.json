@@ -8,6 +8,7 @@
         ".server":                          "/.server",
         "os/theme.lua":                     "/os/theme.lua",
         "os/loadTheme.lua":                 "/os/loadTheme.lua",
+        "os/loadPeripherals.lua":           "/os/loadPeripherals.lua",
         "os/.programs":                     "/os/.programs",
         "os/.audioPlayer":                  "/os/.audioPlayer",
         "os/.calculator":                   "/os/.calculator",
