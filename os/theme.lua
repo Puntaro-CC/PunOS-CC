@@ -54,26 +54,27 @@ local themes = {
 
     -- ---- Coral --------------------------------------------------------------
     -- Warm organic tones from the 9th and 10th Doctor's coral console room.
-    -- Orange primary, magenta accents, dark background.
+    -- Magenta primary, pink secondary, orange border for warmth.
+    -- Distinct from Classic by avoiding orange as the primary entirely.
 
     coral = {
         themeName  = "Coral",
-        primary    = colors.orange,
-        secondary  = colors.magenta,
+        primary    = colors.magenta,
+        secondary  = colors.pink,
         background = colors.black,
         text       = colors.white,
-        subtext    = colors.lightGray,
-        border     = colors.brown,
+        subtext    = colors.pink,
+        border     = colors.orange,
         success    = colors.lime,
         error      = colors.red,
         fgDark     = colors.black,
-        btnNum     = colors.brown,
-        btnOp      = colors.orange,
-        btnFn      = colors.magenta,
-        btnSpec    = colors.pink,
+        btnNum     = colors.orange,
+        btnOp      = colors.magenta,
+        btnFn      = colors.pink,
+        btnSpec    = colors.lightGray,
         btnClear   = colors.red,
-        btnEqual   = colors.orange,
-        selected   = colors.orange,
+        btnEqual   = colors.magenta,
+        selected   = colors.magenta,
     },
 
     -- ---- Copper -------------------------------------------------------------
@@ -101,14 +102,16 @@ local themes = {
 
     -- ---- Toyota -------------------------------------------------------------
     -- Gray, orange and blue. Clean and modern.
+    -- Text uses lightGray rather than white to feel cooler and more metallic,
+    -- with lightBlue subtext giving it a distinct blue-gray character.
 
     toyota = {
         themeName  = "Toyota",
         primary    = colors.orange,
         secondary  = colors.lightBlue,
         background = colors.black,
-        text       = colors.white,
-        subtext    = colors.lightGray,
+        text       = colors.lightGray,
+        subtext    = colors.lightBlue,
         border     = colors.gray,
         success    = colors.lime,
         error      = colors.red,
@@ -124,19 +127,21 @@ local themes = {
 
     -- ---- TARDIS -------------------------------------------------------------
     -- Deep blue and cyan. Designed for the TARDIS kernel console.
+    -- White text ensures values are legible against blue labels.
+    -- Gray border keeps structural chrome distinct from blue subtext.
 
     tardis = {
         themeName  = "TARDIS",
         primary    = colors.cyan,
         secondary  = colors.lightBlue,
         background = colors.black,
-        text       = colors.lightBlue,
+        text       = colors.white,
         subtext    = colors.blue,
-        border     = colors.blue,
+        border     = colors.gray,
         success    = colors.lime,
         error      = colors.red,
         fgDark     = colors.black,
-        btnNum     = colors.blue,
+        btnNum     = colors.gray,
         btnOp      = colors.cyan,
         btnFn      = colors.lightBlue,
         btnSpec    = colors.cyan,
