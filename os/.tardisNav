@@ -1,0 +1,472 @@
+-- PunOS TARDIS Navigator
+-- Set destination, begin/end flight, co-pilot event alerts.
+
+os.pullEvent = os.pullEventRaw
+
+local UI = dofile("/os/loadTheme.lua")
+local monitor, tardis = dofile("/os/loadPeripherals.lua")
+local w, h = term.getSize()
+
+local tardisOk = (tardis ~= nil)
+
+local function safe(fn, ...)
+    if not tardisOk then return nil end
+    local ok, r = pcall(fn, ...)
+    return ok and r or nil
+end
+
+local function safeMulti(fn, ...)
+    if not tardisOk then return nil end
+    local ok, a, b, c, d, e = pcall(fn, ...)
+    if ok then return a, b, c, d, e end
+    return nil
+end
+
+local function shortDim(dim)
+    if not dim then return "?" end
+    return dim:match(":(.+)$") or dim
+end
+
+-- ---- State ------------------------------------------------------------------
+
+local fields    = { x = "", y = "", z = "", dim = "", facing = "" }
+local fieldOrder = { "x", "y", "z", "dim", "facing" }
+local fieldLabels = { x="X", y="Y", z="Z", dim="Dimension", facing="Facing" }
+local activeField = 1
+local copilot   = false
+local statusMsg = ""
+local statusCol = nil
+
+-- ---- Header -----------------------------------------------------------------
+
+local function drawHeader()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1)
+    term.setTextColor(UI.primary)
+    term.write("PunOS  TARDIS Navigator")
+    term.setCursorPos(w - 9, 1)
+    term.setBackgroundColor(UI.border)
+    term.setTextColor(tardisOk and UI.success or UI.error)
+    term.write(tardisOk and "  ONLINE" or " NO SIG ")
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.subtext)
+    term.write("Set destination and manage flight")
+end
+
+-- ---- Current info -----------------------------------------------------------
+
+local function drawCurrent()
+    paintutils.drawFilledBox(1, 3, w, 3, UI.border)
+    term.setCursorPos(2, 3)
+    term.setBackgroundColor(UI.border)
+    term.setTextColor(UI.primary)
+    term.write("CURRENT LOCATION")
+
+    local cx, cy, cz, cFacing, cDim = safeMulti(tardis.getLastKnownLocation)
+    term.setCursorPos(2, 4)
+    term.setBackgroundColor(UI.background)
+    term.setTextColor(UI.subtext)
+    term.write("Pos: ")
+    term.setTextColor(UI.text)
+    if cx then
+        term.write(cx.." "..cy.." "..cz.."   ")
+        term.setTextColor(UI.subtext)
+        term.write("Dim: ")
+        term.setTextColor(UI.text)
+        term.write(shortDim(cDim).."   ")
+        term.setTextColor(UI.subtext)
+        term.write("Face: ")
+        term.setTextColor(UI.text)
+        term.write(cFacing or "?")
+    else
+        term.write("unknown")
+    end
+end
+
+-- ---- Destination form -------------------------------------------------------
+
+local function drawForm()
+    paintutils.drawFilledBox(1, 6, w, 6, UI.border)
+    term.setCursorPos(2, 6)
+    term.setBackgroundColor(UI.border)
+    term.setTextColor(UI.primary)
+    term.write("SET DESTINATION")
+
+    for i, key in ipairs(fieldOrder) do
+        local y     = 7 + (i - 1)
+        local label = fieldLabels[key]
+        local val   = fields[key]
+        local isSel = (i == activeField)
+
+        term.setCursorPos(2, y)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.write(string.format("%-10s", label .. ": "))
+
+        local fieldW = w - 14
+        if isSel then
+            paintutils.drawFilledBox(13, y, 13 + fieldW - 1, y, UI.border)
+            term.setCursorPos(13, y)
+            term.setBackgroundColor(UI.border)
+            term.setTextColor(UI.primary)
+        else
+            paintutils.drawFilledBox(13, y, 13 + fieldW - 1, y, UI.background)
+            term.setCursorPos(13, y)
+            term.setBackgroundColor(UI.background)
+            term.setTextColor(UI.text)
+        end
+        term.write(val .. (isSel and "_" or ""))
+        -- clear rest of field
+        local rest = fieldW - #val - (isSel and 1 or 0)
+        if rest > 0 then term.write(string.rep(" ", rest)) end
+    end
+end
+
+-- ---- Flight status ----------------------------------------------------------
+
+local function drawFlightStatus()
+    local row = 13
+
+    paintutils.drawFilledBox(1, row, w, row, UI.border)
+    term.setCursorPos(2, row)
+    term.setBackgroundColor(UI.border)
+    term.setTextColor(UI.primary)
+    term.write("FLIGHT STATUS")
+    row = row + 1
+
+    if not tardisOk then
+        term.setCursorPos(2, row)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.error)
+        term.write("No TARDIS peripheral.")
+        return
+    end
+
+    local inFlight  = safe(tardis.isInFlight)
+    local pct       = safe(tardis.getFlightPercent) or 0
+    local canBegin  = safe(tardis.canBeginFlight)
+    local canEnd    = safe(tardis.canEndFlight)
+    local inDanger  = safe(tardis.isInDangerZone)
+    local flightEvt = safe(tardis.getFlightEventActive)
+    local evtCtrl   = safe(tardis.getFlightEventControl)
+    local reqEvt    = safe(tardis.getRequiredFlightEvents) or 0
+    local doneEvt   = safe(tardis.getRespondedFlightEvents) or 0
+    local autoLand  = safe(tardis.getIsAutoLandSet)
+
+    term.setBackgroundColor(UI.background)
+    term.setCursorPos(2, row)
+    term.setTextColor(UI.subtext)
+    term.write("Status  ")
+    if inFlight then
+        term.setTextColor(UI.primary)
+        term.write("IN FLIGHT  ")
+        term.setTextColor(UI.subtext)
+        term.write(math.floor(pct * 100) .. "%")
+    elseif canBegin then
+        term.setTextColor(UI.success)
+        term.write("READY")
+    else
+        term.setTextColor(UI.text)
+        term.write("LANDED")
+    end
+    row = row + 1
+
+    -- Progress bar
+    if inFlight then
+        local barW   = w - 4
+        local filled = math.floor(barW * pct)
+        if filled > 0 then
+            paintutils.drawFilledBox(3, row, 2 + filled, row, UI.primary)
+        end
+        if filled < barW then
+            paintutils.drawFilledBox(3 + filled, row, 3 + barW - 1, row, UI.border)
+        end
+        row = row + 1
+    end
+
+    -- Co-pilot / event warning
+    if inFlight and (inDanger or flightEvt) then
+        paintutils.drawFilledBox(1, row, w, row, UI.error)
+        term.setCursorPos(2, row)
+        term.setBackgroundColor(UI.error)
+        term.setTextColor(UI.background)
+        if inDanger then
+            term.write("!! DANGER ZONE — interact with controls now !!")
+        elseif flightEvt and evtCtrl then
+            term.write(">> Interact: " .. evtCtrl ..
+                "  (" .. doneEvt .. "/" .. reqEvt .. ")")
+        end
+        row = row + 1
+    end
+
+    term.setBackgroundColor(UI.background)
+    term.setCursorPos(2, row)
+    term.setTextColor(UI.subtext)
+    term.write("Autopilot  ")
+    term.setTextColor(autoLand and UI.success or UI.text)
+    term.write(autoLand and "ON" or "OFF")
+    term.setTextColor(UI.subtext)
+    term.write("   Co-pilot  ")
+    term.setTextColor(copilot and UI.success or UI.text)
+    term.write(copilot and "ON" or "OFF")
+end
+
+-- ---- Buttons ----------------------------------------------------------------
+
+local btnDefs = {}
+
+local function drawButtons()
+    btnDefs = {}
+    local row = h - 3
+
+    paintutils.drawFilledBox(1, row - 1, w, row - 1, UI.border)
+    term.setBackgroundColor(UI.background)
+    for y = row, h do
+        term.setCursorPos(1, y)
+        term.clearLine()
+    end
+
+    local inFlight = safe(tardis.isInFlight)
+    local canBegin = safe(tardis.canBeginFlight)
+    local canEnd   = safe(tardis.canEndFlight)
+    local autoLand = safe(tardis.getIsAutoLandSet)
+
+    local btns = {}
+
+    -- Set target from form fields
+    table.insert(btns, {
+        label = " Set Target ",
+        col   = UI.primary,
+        active = true,
+        action = function()
+            local x = tonumber(fields.x)
+            local y = tonumber(fields.y)
+            local z = tonumber(fields.z)
+            if not x or not y or not z then
+                statusMsg = "X, Y, Z must be numbers."
+                statusCol = UI.error
+                return
+            end
+            if fields.dim ~= "" then
+                pcall(tardis.setTargetDimension, fields.dim)
+            end
+            if fields.facing ~= "" then
+                local ok, err = pcall(tardis.setTargetDirection, fields.facing)
+                if not ok then
+                    statusMsg = "Invalid facing. Use north/south/east/west."
+                    statusCol = UI.error
+                    return
+                end
+            end
+            pcall(tardis.setTargetPosition, x, y, z)
+            statusMsg = "Target set."
+            statusCol = UI.success
+        end,
+    })
+
+    -- Begin / End flight
+    if not inFlight and canBegin then
+        table.insert(btns, {
+            label  = " Begin Flight ",
+            col    = UI.success,
+            active = true,
+            action = function()
+                local stab = safe(tardis.getIsAutoLandSet) or false
+                pcall(tardis.beginFlight, stab)
+                statusMsg = "Flight started."
+                statusCol = UI.primary
+            end,
+        })
+    elseif inFlight and canEnd then
+        table.insert(btns, {
+            label  = " End Flight ",
+            col    = UI.error,
+            active = true,
+            action = function()
+                pcall(tardis.endFlight)
+                statusMsg = "Landing..."
+                statusCol = UI.primary
+            end,
+        })
+    end
+
+    -- Autopilot toggle
+    table.insert(btns, {
+        label  = autoLand and " Autopilot ON " or " Autopilot OFF ",
+        col    = autoLand and UI.success or UI.border,
+        active = true,
+        action = function()
+            local cur = safe(tardis.getIsAutoLandSet) or false
+            pcall(tardis.setAutoLand, not cur)
+            statusMsg = "Autopilot " .. (not cur and "enabled." or "disabled.")
+            statusCol = UI.subtext
+        end,
+    })
+
+    -- Co-pilot toggle
+    table.insert(btns, {
+        label  = copilot and " Co-pilot ON " or " Co-pilot OFF ",
+        col    = copilot and UI.success or UI.border,
+        active = true,
+        action = function()
+            copilot = not copilot
+            statusMsg = "Co-pilot " .. (copilot and "enabled." or "disabled.")
+            statusCol = UI.subtext
+        end,
+    })
+
+    -- Back
+    table.insert(btns, {
+        label  = " Back ",
+        col    = UI.border,
+        active = true,
+        action = "back",
+    })
+
+    -- Layout buttons
+    local x = 2
+    for _, btn in ipairs(btns) do
+        local x2 = x + #btn.label - 1
+        paintutils.drawFilledBox(x, row, x2, row, btn.col)
+        term.setCursorPos(x, row)
+        term.setBackgroundColor(btn.col)
+        term.setTextColor(btn.col == UI.border and UI.text or UI.fgDark)
+        term.write(btn.label)
+        table.insert(btnDefs, { x1=x, x2=x2, y=row, action=btn.action })
+        x = x2 + 2
+    end
+
+    -- Status message
+    if statusMsg ~= "" then
+        term.setCursorPos(2, h)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(statusCol or UI.subtext)
+        term.clearLine()
+        term.write(statusMsg)
+    end
+end
+
+-- ---- Full redraw ------------------------------------------------------------
+
+local function redraw()
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    drawHeader()
+    drawCurrent()
+    drawForm()
+    drawFlightStatus()
+    drawButtons()
+end
+
+-- ---- Co-pilot flash ---------------------------------------------------------
+
+local function doCopilotFlash()
+    -- Briefly flash the border color to alert the player
+    for _ = 1, 3 do
+        paintutils.drawFilledBox(1, 1, w, h, UI.error)
+        sleep(0.1)
+        redraw()
+        sleep(0.15)
+    end
+end
+
+-- ---- Entry ------------------------------------------------------------------
+
+redraw()
+
+local pollTimer   = os.startTimer(0.5)
+local flashTimer  = nil
+local lastEvtState = false
+
+while true do
+    local e, p1, p2, p3 = os.pullEvent()
+
+    if e == "timer" then
+        if p1 == pollTimer then
+            drawFlightStatus()
+            drawButtons()
+
+            -- Co-pilot: check if a new flight event appeared
+            if copilot and tardisOk then
+                local evtNow = safe(tardis.getFlightEventActive) or false
+                local danger  = safe(tardis.isInDangerZone) or false
+                if (evtNow or danger) and not lastEvtState then
+                    flashTimer = os.startTimer(0)
+                end
+                lastEvtState = evtNow or danger
+            end
+
+            pollTimer = os.startTimer(0.5)
+        elseif p1 == flashTimer then
+            doCopilotFlash()
+            flashTimer = nil
+        end
+
+    elseif e == "onTakeOff" or e == "onLand" or e == "onCrashed" then
+        drawFlightStatus()
+        drawButtons()
+
+    elseif e == "char" then
+        -- Append to active field
+        local key = fieldOrder[activeField]
+        fields[key] = fields[key] .. p1
+        drawForm()
+
+    elseif e == "key" then
+        if p1 == keys.backspace then
+            -- If active field has content, delete last char
+            -- Otherwise go back to .menu
+            local key = fieldOrder[activeField]
+            if #fields[key] > 0 then
+                fields[key] = fields[key]:sub(1, -2)
+                drawForm()
+            else
+                break
+            end
+        elseif p1 == keys.tab or p1 == keys.down then
+            activeField = activeField % #fieldOrder + 1
+            drawForm()
+        elseif p1 == keys.up then
+            activeField = ((activeField - 2) % #fieldOrder) + 1
+            drawForm()
+        elseif p1 == keys.enter then
+            if activeField < #fieldOrder then
+                activeField = activeField + 1
+                drawForm()
+            end
+        end
+
+    elseif e == "mouse_click" or e == "monitor_touch" then
+        local mx, my = p2, p3
+
+        -- Check field clicks
+        for i, key in ipairs(fieldOrder) do
+            local fy = 7 + (i - 1)
+            if my == fy and mx >= 13 and mx <= w - 2 then
+                activeField = i
+                drawForm()
+                break
+            end
+        end
+
+        -- Check button clicks
+        for _, btn in ipairs(btnDefs) do
+            if my == btn.y and mx >= btn.x1 and mx <= btn.x2 then
+                if btn.action == "back" then
+                    goto done
+                else
+                    btn.action()
+                    drawFlightStatus()
+                    drawButtons()
+                end
+                break
+            end
+        end
+    end
+end
+
+::done::
+term.setBackgroundColor(colors.black)
+term.clear()
+term.setCursorPos(1, 1)
+shell.run(".menu")
