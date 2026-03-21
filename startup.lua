@@ -127,8 +127,9 @@ local function firstBoot()
         { key="factory", name="Factory", primary=colors.cyan,    secondary=colors.lightBlue, background=colors.white, text=colors.black,     subtext=colors.gray,      border=colors.lightGray },
         { key="coral",   name="Coral",   primary=colors.magenta, secondary=colors.pink,      background=colors.black, text=colors.white,     subtext=colors.pink,      border=colors.orange    },
         { key="copper",  name="Copper",  primary=colors.orange,  secondary=colors.yellow,    background=colors.black, text=colors.yellow,    subtext=colors.lime,      border=colors.green     },
-        { key="toyota",  name="Toyota",  primary=colors.orange,  secondary=colors.lightBlue, background=colors.black, text=colors.lightGray, subtext=colors.lightBlue, border=colors.gray      },
+        { key="star",    name="Star",    primary=colors.purple,  secondary=colors.magenta,   background=colors.black, text=colors.white,     subtext=colors.lightGray, border=colors.gray      },
         { key="tardis",  name="TARDIS",  primary=colors.cyan,    secondary=colors.lightBlue, background=colors.black, text=colors.white,     subtext=colors.blue,      border=colors.gray      },
+        { key="library", name="Library", primary=colors.red,     secondary=colors.orange,    background=colors.black, text=colors.white,     subtext=colors.orange,    border=colors.brown     },
     }
 
     local selected = 1
@@ -177,7 +178,7 @@ local function firstBoot()
     end
 
     local function drawConfirm()
-        local row = tStartY + 2 * (tileH + 1) + 1
+        local row = tStartY + 3 * (tileH + 1) + 1
         local hint = "Arrow keys or click  |  Enter to confirm"
         term.setCursorPos(math.floor((w - #hint) / 2), row)
         term.setBackgroundColor(colors.black)
