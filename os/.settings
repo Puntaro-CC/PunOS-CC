@@ -6,14 +6,15 @@ os.pullEvent = os.pullEventRaw
 local w, h = term.getSize()
 
 local THEME_FILE  = "/.theme"
-local THEME_ORDER = { "classic", "factory", "coral", "copper", "toyota", "tardis" }
+local THEME_ORDER = { "classic", "factory", "coral", "copper", "star", "tardis", "library" }
 local THEME_NAMES = {
-    classic = "Classic",
+    classic = "PunOS Classic",
     factory = "Factory",
     coral   = "Coral",
     copper  = "Copper",
-    toyota  = "Toyota",
+    star    = "Star",
     tardis  = "TARDIS",
+    library = "Library",
 }
 
 local allThemes = {
@@ -21,8 +22,9 @@ local allThemes = {
     factory = { primary=colors.cyan,    secondary=colors.lightBlue, background=colors.white, text=colors.black,     subtext=colors.gray,      border=colors.lightGray },
     coral   = { primary=colors.magenta, secondary=colors.pink,      background=colors.black, text=colors.white,     subtext=colors.pink,      border=colors.orange    },
     copper  = { primary=colors.orange,  secondary=colors.yellow,    background=colors.black, text=colors.yellow,    subtext=colors.lime,      border=colors.green     },
-    toyota  = { primary=colors.orange,  secondary=colors.lightBlue, background=colors.black, text=colors.lightGray, subtext=colors.lightBlue, border=colors.gray      },
+    star    = { primary=colors.purple,  secondary=colors.magenta,   background=colors.black, text=colors.white,     subtext=colors.lightGray, border=colors.gray      },
     tardis  = { primary=colors.cyan,    secondary=colors.lightBlue, background=colors.black, text=colors.white,     subtext=colors.blue,      border=colors.gray      },
+    library = { primary=colors.red,     secondary=colors.orange,    background=colors.black, text=colors.white,     subtext=colors.orange,    border=colors.brown     },
 }
 
 -- Read current theme from file
@@ -141,7 +143,7 @@ local function drawThemeGrid()
 end
 
 local function drawPreview()
-    local preY = 17
+    local preY = 23
 
     -- Clear preview area using current UI palette
     term.setBackgroundColor(UI.background)
