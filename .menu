@@ -29,6 +29,27 @@ local function shortDim(dim)
     return dim:match(":(.+)$") or dim
 end
 
+-- ---- Last entered -----------------------------------------------------------
+
+local ENTRY_FILE = "/.tardis_last_entry"
+
+local function readLastEntry()
+    if not fs.exists(ENTRY_FILE) then return nil end
+    local f = fs.open(ENTRY_FILE, "r")
+    local v = f.readAll():gsub("%s+$", "")
+    f.close()
+    return v ~= "" and v or nil
+end
+
+local function saveLastEntry(player)
+    local stamp = "Day " .. os.day() .. " | " .. textutils.formatTime(os.time(), false)
+    local f = fs.open(ENTRY_FILE, "w")
+    f.write(player .. "  —  " .. stamp)
+    f.close()
+end
+
+local lastEntry = readLastEntry()
+
 -- ---- Header -----------------------------------------------------------------
 
 local function drawHeader()
@@ -203,6 +224,18 @@ local function drawStatusFlat()
     term.setTextColor(UI.subtext) term.write("Shell    ")
     term.setTextColor(UI.text)    term.write(shellTheme)
     row = row + 1
+
+    -- Last entered
+    if lastEntry and row <= h - 3 then
+        term.setCursorPos(2, row)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.write("Last in  ")
+        term.setTextColor(UI.text)
+        local entry = lastEntry:sub(1, w - 12)
+        term.write(entry)
+        row = row + 1
+    end
 
     if row <= h - 3 then
         term.setCursorPos(2, row)
@@ -407,6 +440,9 @@ local function drawStatusMonitor()
     pline(row, "Int Lock ", intLocked and "Locked" or "Free", intLocked and UI.error or UI.success); row = row + 1
     pline(row, "Ext Lock ", extLocked and "Locked" or "Free", extLocked and UI.error or UI.success); row = row + 1
     pline(row, "Shell    ", shellTheme); row = row + 1
+    if lastEntry then
+        pline(row, "Last in  ", lastEntry:sub(1, panelW - 12)); row = row + 1
+    end
 end
 
 -- ---- Nav bar (small screen only) --------------------------------------------
@@ -511,7 +547,15 @@ while true do
 
     elseif e == "onTakeOff" or e == "onLand" or e == "onCrashed"
         or e == "onDoorOpened" or e == "onDoorClosed"
-        or e == "onShellChanged" or e == "onTardisEntered" then
+        or e == "onShellChanged" then
+        if hasMonitor then drawStatusMonitor() else drawStatusFlat() end
+
+    elseif e == "onTardisEntered" then
+        -- p1 is the player name
+        if p1 then
+            saveLastEntry(p1)
+            lastEntry = readLastEntry()
+        end
         if hasMonitor then drawStatusMonitor() else drawStatusFlat() end
 
     elseif e == "mouse_click" or e == "monitor_touch" then
