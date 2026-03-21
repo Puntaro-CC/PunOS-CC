@@ -5,6 +5,7 @@
 os.pullEvent = os.pullEventRaw
 
 local UI               = dofile("/os/loadTheme.lua")
+local nativeTerm       = term.current()  -- save before any redirect
 local monitor, tardis, w, h = dofile("/os/loadPeripherals.lua")
 local tardisOk         = (tardis ~= nil)
 local hasMonitor       = (monitor ~= nil)
@@ -477,14 +478,13 @@ local function runApp(path)
         path == "os/.UninstallDialog"
     )
     if useNative then
-        term.restore()
+        term.redirect(nativeTerm)
     end
     term.setBackgroundColor(colors.black)
     term.clear()
     term.setCursorPos(1, 1)
     shell.run(path)
     if useNative and hasMonitor then
-        -- Re-redirect back to monitor after app exits
         term.redirect(monitor)
         monitor.setTextScale(0.5)
     end
