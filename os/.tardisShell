@@ -289,6 +289,393 @@ redraw()
 
 local halfW = math.floor(w / 2) - 1
 
+local running = true
+while running do
+    local e, p1, p2, p3 = os.pullEvent()
+
+    if e == "key" then
+        if p1 == keys.backspace then
+            break
+        elseif p1 == keys.up then
+            -- Scroll theme list up
+            if themeScroll > 0 then
+                themeScroll = themeScroll - 1
+                drawThemeList()
+            end
+        elseif p1 == keys.down then
+            if themeScroll + THEME_VIS < #themes then
+                themeScroll = themeScroll + 1
+                drawThemeList()
+            end
+        end
+
+    elseif e == "onShellChanged" then
+        activeTheme = safe(tardis.getExteriorTheme)
+        drawThemeList()
+        drawButtons()
+
+    elseif e == "mouse_click" or e == "monitor_touch" then
+        local mx, my = p2, p3
+
+        -- Theme list click
+        if mx >= 1 and mx <= halfW and my >= LIST_START and my <= LIST_END then
+            local idx = my - LIST_START + 1 + themeScroll
+            if themes[idx] then
+                selTheme = themes[idx]
+                loadPatterns()
+                themeScroll = 0
+                patScroll   = 0
+                redraw()
+            end
+
+        -- Pattern list click
+        elseif mx > halfW + 1 and my >= LIST_START and my <= LIST_END then
+            local idx = my - LIST_START + 1 + patScroll
+            if patterns[idx] then
+                selPattern = patterns[idx]
+                drawPatternList()
+                drawButtons()
+            end
+        end
+
+        -- Button clicks
+        for _, btn in ipairs(btnDefs) do
+            if my == btn.y and mx >= btn.x1 and mx <= btn.x2 then
+                if btn.action == "back" then
+                    running = false
+                else
+                    btn.action()
+                    drawThemeList()
+                    drawButtons()
+                end
+                break
+            end
+        end
+
+        -- Scroll arrows
+        if mx >= halfW - 7 and my == LIST_END and themeScroll + THEME_VIS < #themes then
+            themeScroll = themeScroll + 1; drawThemeList()
+        elseif mx >= halfW - 5 and my == LIST_START and themeScroll > 0 then
+            themeScroll = themeScroll - 1; drawThemeList()
+        end
+        if mx >= w - 7 and my == LIST_END and patScroll + PAT_VIS < #patterns then
+            patScroll = patScroll + 1; drawPatternList()
+        elseif mx >= w - 5 and my == LIST_START and patScroll > 0 then
+            patScroll = patScroll - 1; drawPatternList()
+        end
+
+    elseif e == "mouse_scroll" then
+        local mx = p2
+        if mx <= halfW then
+            if p1 == 1 and themeScroll + THEME_VIS < #themes then
+                themeScroll = themeScroll + 1; drawThemeList()
+            elseif p1 == -1 and themeScroll > 0 then
+                themeScroll = themeScroll - 1; drawThemeList()
+            end
+        else
+            if p1 == 1 and patScroll + PAT_VIS < #patterns then
+                patScroll = patScroll + 1; drawPatternList()
+            elseif p1 == -1 and patScroll > 0 then
+                patScroll = patScroll - 1; drawPatternList()
+            end
+        end
+    end
+end
+
+term.setBackgroundColor(colors.black)
+term.clear()
+term.setCursorPos(1, 1)
+shell.run(".menu")-- PunOS TARDIS Shell
+-- Browse and apply exterior shell themes and patterns.
+
+os.pullEvent = os.pullEventRaw
+
+local UI = dofile("/os/loadTheme.lua")
+local monitor, tardis = dofile("/os/loadPeripherals.lua")
+local w, h = term.getSize()
+
+local tardisOk = (tardis ~= nil)
+
+local function safe(fn, ...)
+    if not tardisOk then return nil end
+    local ok, r = pcall(fn, ...)
+    return ok and r or nil
+end
+
+-- ---- State ------------------------------------------------------------------
+
+local themes      = {}   -- list of theme name strings
+local patterns    = {}   -- list of pattern ids for selected theme
+local themeScroll = 0
+local patScroll   = 0
+local selTheme    = nil  -- currently highlighted theme name
+local selPattern  = nil  -- currently highlighted pattern id
+local activeTheme = nil  -- what's actually installed on the TARDIS now
+local statusMsg   = ""
+local statusCol   = nil
+local btnDefs     = {}
+
+local THEME_VIS   = 0
+local PAT_VIS     = 0
+local LIST_START  = 4
+local LIST_END    = h - 4
+
+-- ---- Header -----------------------------------------------------------------
+
+local function drawHeader()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1)
+    term.setTextColor(UI.primary)
+    term.write("PunOS  TARDIS Shell")
+    term.setCursorPos(w - 9, 1)
+    term.setBackgroundColor(UI.border)
+    term.setTextColor(tardisOk and UI.success or UI.error)
+    term.write(tardisOk and "  ONLINE" or " NO SIG ")
+    term.setCursorPos(2, 2)
+    term.setTextColor(UI.subtext)
+    term.write("Browse and apply exterior shell themes")
+end
+
+-- ---- Load data --------------------------------------------------------------
+
+local function loadThemes()
+    if not tardisOk then return end
+    local raw = safe(tardis.getShellThemes)
+    if raw then
+        themes = raw
+        activeTheme = safe(tardis.getExteriorTheme)
+        selTheme = activeTheme or (themes[1] or nil)
+    end
+end
+
+local function loadPatterns()
+    patterns = {}
+    selPattern = nil
+    if not tardisOk or not selTheme then return end
+    local raw = safe(tardis.getShellThemePatterns, selTheme)
+    if raw then
+        patterns = raw
+        selPattern = patterns[1] or nil
+    end
+end
+
+-- ---- Theme list (left half) -------------------------------------------------
+
+local function drawThemeList()
+    local halfW = math.floor(w / 2) - 1
+
+    paintutils.drawFilledBox(1, LIST_START - 1, halfW, LIST_START - 1, UI.border)
+    term.setCursorPos(2, LIST_START - 1)
+    term.setBackgroundColor(UI.border)
+    term.setTextColor(UI.primary)
+    term.write("Shell Themes")
+
+    THEME_VIS = LIST_END - LIST_START + 1
+
+    for i = 1, THEME_VIS do
+        local idx   = i + themeScroll
+        local theme = themes[idx]
+        local y     = LIST_START + i - 1
+
+        term.setCursorPos(1, y)
+        term.setBackgroundColor(UI.background)
+        term.clearLine()
+
+        if theme then
+            local isSel    = (theme == selTheme)
+            local isActive = (theme == activeTheme)
+
+            if isSel then
+                paintutils.drawFilledBox(1, y, halfW, y, UI.primary)
+                term.setCursorPos(2, y)
+                term.setBackgroundColor(UI.primary)
+                term.setTextColor(UI.fgDark)
+            elseif isActive then
+                term.setCursorPos(2, y)
+                term.setTextColor(UI.success)
+            else
+                term.setCursorPos(2, y)
+                term.setTextColor(UI.text)
+            end
+
+            local marker = isActive and "* " or "  "
+            local line   = marker .. theme
+            if #line > halfW - 2 then line = line:sub(1, halfW - 2) end
+            term.write(line)
+        end
+    end
+
+    if themeScroll > 0 then
+        term.setCursorPos(halfW - 5, LIST_START)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.write("[^ up]")
+    end
+    if themeScroll + THEME_VIS < #themes then
+        term.setCursorPos(halfW - 7, LIST_END)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.write("[v more]")
+    end
+end
+
+-- ---- Pattern list (right half) ----------------------------------------------
+
+local function drawPatternList()
+    local halfW  = math.floor(w / 2) - 1
+    local rightX = halfW + 2
+
+    paintutils.drawFilledBox(rightX, LIST_START - 1, w, LIST_START - 1, UI.border)
+    term.setCursorPos(rightX + 1, LIST_START - 1)
+    term.setBackgroundColor(UI.border)
+    term.setTextColor(UI.primary)
+    term.write("Patterns")
+
+    PAT_VIS = LIST_END - LIST_START + 1
+
+    for i = 1, PAT_VIS do
+        local idx     = i + patScroll
+        local pattern = patterns[idx]
+        local y       = LIST_START + i - 1
+
+        term.setCursorPos(rightX, y)
+        term.setBackgroundColor(UI.background)
+        term.clearLine()
+
+        if pattern then
+            local isSel = (pattern == selPattern)
+
+            if isSel then
+                paintutils.drawFilledBox(rightX, y, w, y, UI.primary)
+                term.setCursorPos(rightX + 1, y)
+                term.setBackgroundColor(UI.primary)
+                term.setTextColor(UI.fgDark)
+            else
+                term.setCursorPos(rightX + 1, y)
+                term.setTextColor(UI.text)
+            end
+
+            local line = pattern
+            if #line > w - rightX - 2 then line = line:sub(1, w - rightX - 2) end
+            term.write(line)
+        elseif i == 1 and #patterns == 0 then
+            term.setCursorPos(rightX + 1, y)
+            term.setTextColor(UI.subtext)
+            term.write("No patterns")
+        end
+    end
+
+    if patScroll > 0 then
+        term.setCursorPos(w - 5, LIST_START)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.write("[^ up]")
+    end
+    if patScroll + PAT_VIS < #patterns then
+        term.setCursorPos(w - 7, LIST_END)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.subtext)
+        term.write("[v more]")
+    end
+end
+
+-- ---- Divider ----------------------------------------------------------------
+
+local function drawDivider()
+    local mid = math.floor(w / 2)
+    for y = LIST_START - 1, LIST_END do
+        term.setCursorPos(mid, y)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(UI.border)
+        term.write("|")
+    end
+end
+
+-- ---- Buttons ----------------------------------------------------------------
+
+local function drawButtons()
+    btnDefs = {}
+    local row = h - 2
+
+    paintutils.drawFilledBox(1, row - 1, w, row - 1, UI.border)
+    term.setBackgroundColor(UI.background)
+    term.setCursorPos(1, row); term.clearLine()
+    term.setCursorPos(1, h);   term.clearLine()
+
+    local btns = {}
+
+    if selTheme then
+        table.insert(btns, {
+            label  = " Apply Theme ",
+            col    = UI.primary,
+            action = function()
+                pcall(tardis.setShellTheme, selTheme)
+                activeTheme = selTheme
+                statusMsg = "Shell theme set to " .. selTheme
+                statusCol = UI.success
+            end,
+        })
+    end
+
+    if selTheme and selPattern and #patterns > 0 then
+        table.insert(btns, {
+            label  = " Apply Pattern ",
+            col    = UI.secondary or UI.primary,
+            action = function()
+                pcall(tardis.setShellPattern, selTheme, selPattern)
+                statusMsg = "Pattern set to " .. selPattern
+                statusCol = UI.success
+            end,
+        })
+    end
+
+    table.insert(btns, {
+        label  = " Back ",
+        col    = UI.border,
+        action = "back",
+    })
+
+    local x = 2
+    for _, btn in ipairs(btns) do
+        local x2 = x + #btn.label - 1
+        paintutils.drawFilledBox(x, row, x2, row, btn.col)
+        term.setCursorPos(x, row)
+        term.setBackgroundColor(btn.col)
+        term.setTextColor(btn.col == UI.border and UI.text or UI.fgDark)
+        term.write(btn.label)
+        table.insert(btnDefs, { x1=x, x2=x2, y=row, action=btn.action })
+        x = x2 + 2
+    end
+
+    if statusMsg ~= "" then
+        term.setCursorPos(2, h)
+        term.setBackgroundColor(UI.background)
+        term.setTextColor(statusCol or UI.subtext)
+        term.clearLine()
+        term.write(statusMsg)
+    end
+end
+
+-- ---- Full redraw ------------------------------------------------------------
+
+local function redraw()
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    drawHeader()
+    drawThemeList()
+    drawDivider()
+    drawPatternList()
+    drawButtons()
+end
+
+-- ---- Entry ------------------------------------------------------------------
+
+loadThemes()
+loadPatterns()
+redraw()
+
+local halfW = math.floor(w / 2) - 1
+
 while true do
     local e, p1, p2, p3 = os.pullEvent()
 
