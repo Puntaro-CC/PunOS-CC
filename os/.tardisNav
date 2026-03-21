@@ -396,6 +396,23 @@ local function drawButtons()
         col    = autoLand and UI.success or UI.border,
         action = function()
             local cur = safe(tardis.getIsAutoLandSet) or false
+            if not cur then
+                -- Warn before enabling — autopilot skips the flight minigame
+                local confirmed = confirmDialog({
+                    "  Enable Autopilot?  ",
+                    "",
+                    "Autopilot stabilizes flight and skips",
+                    "all mid-flight control interactions,",
+                    "making travel nearly instant.",
+                    "",
+                    "This removes the flying minigame entirely.",
+                    "Are you sure?",
+                }, " Enable ", " Cancel ")
+                if not confirmed then
+                    redraw()
+                    return
+                end
+            end
             pcall(tardis.setAutoLand, not cur)
             statusMsg = "Autopilot " .. (not cur and "enabled." or "disabled.")
             statusCol = UI.subtext
@@ -439,7 +456,57 @@ local function drawButtons()
     end
 end
 
--- ---- Full redraw ------------------------------------------------------------
+-- ---- Confirm dialog ---------------------------------------------------------
+
+local function confirmDialog(lines, yesLabel, noLabel)
+    yesLabel = yesLabel or " Yes "
+    noLabel  = noLabel  or " No  "
+
+    term.setBackgroundColor(UI.background)
+    for y = STATUS_ROW, h - 4 do
+        term.setCursorPos(1, y)
+        term.clearLine()
+    end
+
+    local midY   = math.floor((STATUS_ROW + h - 4) / 2)
+    local startY = midY - math.floor(#lines / 2)
+
+    for i, line in ipairs(lines) do
+        term.setCursorPos(math.floor((w - #line) / 2), startY + i - 1)
+        term.setTextColor(i == 1 and UI.error or UI.text)
+        term.write(line)
+    end
+
+    local btnY = startY + #lines + 1
+    local yesX = math.floor(w / 2) - #yesLabel - 1
+    local noX  = math.floor(w / 2) + 2
+
+    paintutils.drawFilledBox(yesX, btnY, yesX + #yesLabel - 1, btnY, UI.error)
+    term.setCursorPos(yesX, btnY)
+    term.setBackgroundColor(UI.error)
+    term.setTextColor(UI.background)
+    term.write(yesLabel)
+
+    paintutils.drawFilledBox(noX, btnY, noX + #noLabel - 1, btnY, UI.primary)
+    term.setCursorPos(noX, btnY)
+    term.setBackgroundColor(UI.primary)
+    term.setTextColor(UI.background)
+    term.write(noLabel)
+
+    while true do
+        local e, p1, p2, p3 = os.pullEvent()
+        if e == "mouse_click" or e == "monitor_touch" then
+            local mx, my = p2, p3
+            if my == btnY then
+                if mx >= yesX and mx <= yesX + #yesLabel - 1 then return true end
+                if mx >= noX  and mx <= noX  + #noLabel  - 1 then return false end
+            end
+        elseif e == "key" then
+            if p1 == keys.enter or p1 == keys.y then return true end
+            if p1 == keys.n or p1 == keys.backspace or p1 == keys.escape then return false end
+        end
+    end
+end
 
 local function redraw()
     term.setBackgroundColor(UI.background)
