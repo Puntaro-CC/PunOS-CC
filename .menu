@@ -43,8 +43,9 @@ end
 
 local function saveLastEntry(player)
     local stamp = "Day " .. os.day() .. " | " .. textutils.formatTime(os.time(), false)
+    local entry = (player and player ~= "" and player or "unknown") .. " - " .. stamp
     local f = fs.open(ENTRY_FILE, "w")
-    f.write(player .. "  —  " .. stamp)
+    f.write(entry)
     f.close()
 end
 
@@ -263,19 +264,15 @@ local LEFT_BTNS = {
     { label = "Programs",  action = function() return "os/.programs"    end },
 }
 local RIGHT_BTNS = {
-    { label = "Begin Flt", action = function()
-        if tardisOk then pcall(tardis.beginFlight, false) end
-    end },
-    { label = "End Flt",   action = function()
-        if tardisOk then pcall(tardis.endFlight) end
-    end },
+    { label = "Cmd Line",  action = function() return "os/.command"         end },
     { label = "Lock Door", action = function()
         if tardisOk then
             local _, ext = safeMulti(tardis.getDoorLocked)
             pcall(tardis.setDoorLocked, not ext)
         end
     end },
-    { label = "Settings",  action = function() return "os/.settings"    end },
+    { label = "Settings",  action = function() return "os/.settings"        end },
+    { label = "Uninstall", action = function() return "os/.UninstallDialog" end },
 }
 
 local btnRegions = {}  -- {x1,y1,x2,y2, action}
@@ -551,11 +548,12 @@ while true do
         if hasMonitor then drawStatusMonitor() else drawStatusFlat() end
 
     elseif e == "onTardisEntered" then
-        -- p1 is the player name
-        if p1 then
-            saveLastEntry(p1)
-            lastEntry = readLastEntry()
-        end
+        -- player name may arrive as p1 or p2 depending on Handles version
+        local player = (type(p1) == "string" and p1 ~= "") and p1
+                    or (type(p2) == "string" and p2 ~= "") and p2
+                    or nil
+        saveLastEntry(player)
+        lastEntry = readLastEntry()
         if hasMonitor then drawStatusMonitor() else drawStatusFlat() end
 
     elseif e == "mouse_click" or e == "monitor_touch" then
