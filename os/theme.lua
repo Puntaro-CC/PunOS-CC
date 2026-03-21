@@ -114,35 +114,67 @@ local themes = {
         },
     },
 
-    -- ---- Toyota -------------------------------------------------------------
-    -- Gray, orange and blue. Clean and modern.
-    -- Text uses lightGray rather than white to feel cooler and more metallic,
-    -- with lightBlue subtext giving it a distinct blue-gray character.
+    -- ---- Star ---------------------------------------------------------------
+    -- Sleek purple and violet. Modern, almost neon.
+    -- Purple primary, magenta accents, deep black background.
 
-    toyota = {
-        themeName  = "Toyota",
-        primary    = colors.orange,
-        secondary  = colors.lightBlue,
+    star = {
+        themeName  = "Star",
+        primary    = colors.purple,
+        secondary  = colors.magenta,
         background = colors.black,
-        text       = colors.lightGray,
-        subtext    = colors.lightBlue,
+        text       = colors.white,
+        subtext    = colors.lightGray,
         border     = colors.gray,
         success    = colors.lime,
         error      = colors.red,
         fgDark     = colors.black,
         btnNum     = colors.gray,
-        btnOp      = colors.orange,
-        btnFn      = colors.lightBlue,
-        btnSpec    = colors.cyan,
+        btnOp      = colors.purple,
+        btnFn      = colors.magenta,
+        btnSpec    = colors.lightBlue,
         btnClear   = colors.red,
-        btnEqual   = colors.lightBlue,
-        selected   = colors.lightBlue,
+        btnEqual   = colors.purple,
+        selected   = colors.purple,
         palette    = {
-            [colors.orange]    = 0xE8720C,  -- primary: clean automotive orange
-            [colors.gray]      = 0x5A6472,  -- border: cool steel gray
-            [colors.lightGray] = 0x9BA8B5,  -- text: lighter steel
-            [colors.lightBlue] = 0x4A90D9,  -- subtext/secondary: steel blue
-            [colors.cyan]      = 0x6BB8E0,  -- spec: lighter steel blue
+            [colors.purple]    = 0x9B30FF,  -- primary: vivid neon purple
+            [colors.magenta]   = 0xCC44CC,  -- secondary: bright violet-pink
+            [colors.gray]      = 0x3A2A5A,  -- border: deep purple-gray
+            [colors.lightGray] = 0xC4B8E0,  -- text: lavender-white
+            [colors.lightBlue] = 0x8866DD,  -- spec: mid purple
+        },
+    },
+
+    -- ---- Library ------------------------------------------------------------
+    -- Warm mahogany, red and amber. Rich wooden tones.
+    -- A nod to the Library — a planet-sized repository of knowledge.
+
+    library = {
+        themeName  = "Library",
+        primary    = colors.red,
+        secondary  = colors.orange,
+        background = colors.black,
+        text       = colors.white,
+        subtext    = colors.orange,
+        border     = colors.brown,
+        success    = colors.lime,
+        error      = colors.pink,
+        fgDark     = colors.black,
+        btnNum     = colors.brown,
+        btnOp      = colors.red,
+        btnFn      = colors.orange,
+        btnSpec    = colors.yellow,
+        btnClear   = colors.pink,
+        btnEqual   = colors.red,
+        selected   = colors.red,
+        palette    = {
+            [colors.black]     = 0x0F0A08,  -- background: near-black with warm tint
+            [colors.red]       = 0xA0281C,  -- primary: deep mahogany red
+            [colors.orange]    = 0xC8782A,  -- subtext/secondary: warm amber
+            [colors.brown]     = 0x6B3A28,  -- border: rich dark wood
+            [colors.yellow]    = 0xD4A84B,  -- spec: golden amber
+            [colors.white]     = 0xF5E6D0,  -- text: warm parchment white
+            [colors.pink]      = 0xCC5544,  -- error: muted brick red
         },
     },
 
