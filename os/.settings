@@ -1,5 +1,5 @@
 -- PunOS Settings
--- Theme selection with live preview
+-- Theme selection with live preview and correct palette per tile
 
 os.pullEvent = os.pullEventRaw
 
@@ -16,7 +16,6 @@ local THEME_NAMES = {
     tardis  = "TARDIS",
 }
 
--- Minimal color data for previewing themes without changing the live theme
 local allThemes = {
     classic = { primary=colors.orange,  secondary=colors.yellow,    background=colors.black, text=colors.white,     subtext=colors.lightGray, border=colors.gray      },
     factory = { primary=colors.cyan,    secondary=colors.lightBlue, background=colors.white, text=colors.black,     subtext=colors.gray,      border=colors.lightGray },
@@ -26,8 +25,7 @@ local allThemes = {
     tardis  = { primary=colors.cyan,    secondary=colors.lightBlue, background=colors.black, text=colors.white,     subtext=colors.blue,      border=colors.gray      },
 }
 
-local UI = dofile("/os/loadTheme.lua")
-
+-- Read current theme from file
 local currentTheme = "classic"
 if fs.exists(THEME_FILE) then
     local f = fs.open(THEME_FILE, "r")
@@ -36,10 +34,44 @@ if fs.exists(THEME_FILE) then
 end
 if not allThemes[currentTheme] then currentTheme = "classic" end
 
+-- Apply current theme palette and get UI colors
+local UI = dofile("/os/loadTheme.lua")
+
 local selectedTheme = currentTheme
 local themeButtons  = {}
 local applyBtn      = {}
 local backBtn       = {}
+
+-- ---- Palette helpers --------------------------------------------------------
+
+-- Temporarily write a theme to file, apply its palette, call fn, then restore.
+-- Used to draw each tile and preview with the correct palette active.
+local function withPalette(key, fn)
+    local f = fs.open(THEME_FILE, "w")
+    f.write(key); f.close()
+    dofile("/os/loadTheme.lua")
+    fn()
+    -- Restore active theme palette
+    local f2 = fs.open(THEME_FILE, "w")
+    f2.write(currentTheme); f2.close()
+    dofile("/os/loadTheme.lua")
+end
+
+-- Apply palette for selected theme (for preview), then restore current
+local function withSelectedPalette(fn)
+    if selectedTheme == currentTheme then
+        fn()
+    else
+        withPalette(selectedTheme, fn)
+    end
+end
+
+-- Restore current theme palette and UI — call on any exit path
+local function restoreCurrentPalette()
+    local f = fs.open(THEME_FILE, "w")
+    f.write(currentTheme); f.close()
+    UI = dofile("/os/loadTheme.lua")
+end
 
 -- ---- Draw -------------------------------------------------------------------
 
@@ -60,14 +92,12 @@ end
 local function drawThemeGrid()
     themeButtons = {}
 
-    -- Two rows of 3 tiles
     local COLS   = 3
     local tileW  = math.floor((w - 2) / COLS)
     local tileH  = 5
     local startY = 4
 
     for i, key in ipairs(THEME_ORDER) do
-        local t   = allThemes[key]
         local col = (i - 1) % COLS
         local row = math.floor((i - 1) / COLS)
         local x1  = 2 + col * tileW
@@ -75,80 +105,89 @@ local function drawThemeGrid()
         local y1  = startY + row * (tileH + 1)
         local y2  = y1 + tileH - 1
 
-        paintutils.drawFilledBox(x1, y1, x2, y2, t.border)
-        paintutils.drawFilledBox(x1, y1, x2, y1, t.primary)
+        -- Draw this tile with its own palette active so colors are correct
+        withPalette(key, function()
+            local t = allThemes[key]
 
-        term.setCursorPos(x1 + 1, y1 + 1)
-        term.setBackgroundColor(t.border)
-        term.setTextColor(t.primary)
-        local name = THEME_NAMES[key]
-        if #name > tileW - 2 then name = name:sub(1, tileW - 3) end
-        term.write(name)
+            paintutils.drawFilledBox(x1, y1, x2, y2, t.border)
+            paintutils.drawFilledBox(x1, y1, x2, y1, t.primary)
 
-        term.setCursorPos(x1 + 1, y1 + 2)
-        term.setTextColor(t.text)
-        term.write("Text")
+            term.setCursorPos(x1 + 1, y1 + 1)
+            term.setBackgroundColor(t.border)
+            term.setTextColor(t.primary)
+            local name = THEME_NAMES[key]
+            if #name > tileW - 2 then name = name:sub(1, tileW - 3) end
+            term.write(name)
 
-        term.setCursorPos(x1 + 1, y1 + 3)
-        term.setTextColor(t.subtext)
-        term.write("Sub")
+            term.setCursorPos(x1 + 1, y1 + 2)
+            term.setTextColor(t.text)
+            term.write("Text")
 
-        if key == selectedTheme then
-            paintutils.drawBox(x1, y1, x2, y2, t.primary)
-            term.setCursorPos(x1 + math.floor((tileW - 1) / 2), y2)
-            term.setBackgroundColor(t.primary)
-            term.setTextColor(t.border)
-            term.write("*")
-        end
+            term.setCursorPos(x1 + 1, y1 + 3)
+            term.setTextColor(t.subtext)
+            term.write("Sub")
+
+            if key == selectedTheme then
+                paintutils.drawBox(x1, y1, x2, y2, t.primary)
+                term.setCursorPos(x1 + math.floor((tileW - 1) / 2), y2)
+                term.setBackgroundColor(t.primary)
+                term.setTextColor(t.border)
+                term.write("*")
+            end
+        end)
 
         themeButtons[key] = {x1=x1, y1=y1, x2=x2, y2=y2}
     end
 end
 
 local function drawPreview()
-    -- Preview sits below the two tile rows
     local preY = 17
 
+    -- Clear preview area using current UI palette
     term.setBackgroundColor(UI.background)
-    for y = preY, preY + 5 do
+    for y = preY, preY + 6 do
         term.setCursorPos(1, y)
         term.clearLine()
     end
-
-    local t = allThemes[selectedTheme]
 
     term.setCursorPos(2, preY)
     term.setTextColor(UI.subtext)
     term.write("Preview:")
 
-    local px1, px2 = 2, w - 1
-    paintutils.drawFilledBox(px1, preY + 1, px2, preY + 1, t.border)
-    term.setCursorPos(px1 + 1, preY + 1)
-    term.setTextColor(t.primary)
-    term.write("PunOS  ")
-    term.setTextColor(t.subtext)
-    term.write("Sample Program")
+    -- Draw the actual preview with selected theme's palette
+    withSelectedPalette(function()
+        local t = allThemes[selectedTheme]
+        local px1, px2 = 2, w - 1
 
-    paintutils.drawFilledBox(px1, preY + 2, px2, preY + 2, t.primary)
-    term.setCursorPos(px1 + 1, preY + 2)
-    term.setTextColor(t.background ~= colors.black and colors.black or colors.white)
-    term.write("> Selected Item")
+        paintutils.drawFilledBox(px1, preY + 1, px2, preY + 1, t.border)
+        term.setCursorPos(px1 + 1, preY + 1)
+        term.setTextColor(t.primary)
+        term.write("PunOS  ")
+        term.setTextColor(t.subtext)
+        term.write("Sample Program")
 
-    paintutils.drawFilledBox(px1, preY + 3, px2, preY + 3, t.background)
-    term.setCursorPos(px1 + 1, preY + 3)
-    term.setTextColor(t.text)
-    term.write("  Normal Item")
+        paintutils.drawFilledBox(px1, preY + 2, px2, preY + 2, t.primary)
+        term.setCursorPos(px1 + 1, preY + 2)
+        term.setTextColor(t.background ~= colors.black and colors.black or colors.white)
+        term.write("> Selected Item")
 
-    paintutils.drawFilledBox(px1, preY + 4, px2, preY + 4, t.border)
-    term.setCursorPos(px1 + 1, preY + 4)
-    term.setTextColor(t.subtext)
-    term.write("Footer text here")
+        paintutils.drawFilledBox(px1, preY + 3, px2, preY + 3, t.background)
+        term.setCursorPos(px1 + 1, preY + 3)
+        term.setTextColor(t.text)
+        term.write("  Normal Item")
 
+        paintutils.drawFilledBox(px1, preY + 4, px2, preY + 4, t.border)
+        term.setCursorPos(px1 + 1, preY + 4)
+        term.setTextColor(t.subtext)
+        term.write("Footer text here")
+    end)
+
+    -- Selected label drawn with current UI palette
     term.setCursorPos(2, preY + 6)
     term.setBackgroundColor(UI.background)
     term.setTextColor(UI.subtext)
     term.write("Selected: ")
-    term.setTextColor(t.primary)
+    term.setTextColor(allThemes[selectedTheme].primary)
     term.write(THEME_NAMES[selectedTheme])
     if selectedTheme == currentTheme then
         term.setTextColor(UI.success)
@@ -162,7 +201,7 @@ local function drawActions()
     paintutils.drawFilledBox(1, row - 1, w, row - 1, UI.border)
 
     local applyLabel = " Apply Theme "
-    local ax  = math.floor(w / 2) - #applyLabel - 1
+    local ax    = math.floor(w / 2) - #applyLabel - 1
     local isNew = selectedTheme ~= currentTheme
     paintutils.drawFilledBox(ax, row, ax + #applyLabel - 1, row,
         isNew and UI.primary or UI.border)
@@ -192,16 +231,18 @@ local function redraw()
 end
 
 local function applyTheme()
+    -- Write new theme and fully apply it
     local f = fs.open(THEME_FILE, "w")
-    f.write(selectedTheme)
-    f.close()
+    f.write(selectedTheme); f.close()
     currentTheme = selectedTheme
+    UI = dofile("/os/loadTheme.lua")
+
     term.setCursorPos(2, h)
     term.setBackgroundColor(UI.background)
     term.setTextColor(UI.success)
     term.write("Saved! Restart programs for full effect.     ")
     sleep(2)
-    drawActions()
+    redraw()
 end
 
 -- ---- Event loop -------------------------------------------------------------
@@ -228,6 +269,7 @@ while true do
             if mx >= applyBtn.x1 and mx <= applyBtn.x2 and my == applyBtn.y1 then
                 applyTheme()
             elseif mx >= backBtn.x1 and mx <= backBtn.x2 and my == backBtn.y1 then
+                restoreCurrentPalette()
                 break
             end
         end
@@ -237,16 +279,17 @@ while true do
         for i, k in ipairs(THEME_ORDER) do if k == selectedTheme then idx = i end end
 
         if p1 == keys.left or p1 == keys.a then
-            if idx > 1 then selectedTheme = THEME_ORDER[idx - 1]; drawThemeGrid(); drawPreview(); drawActions() end
+            if idx > 1 then selectedTheme = THEME_ORDER[idx-1]; drawThemeGrid(); drawPreview(); drawActions() end
         elseif p1 == keys.right or p1 == keys.d then
-            if idx < #THEME_ORDER then selectedTheme = THEME_ORDER[idx + 1]; drawThemeGrid(); drawPreview(); drawActions() end
+            if idx < #THEME_ORDER then selectedTheme = THEME_ORDER[idx+1]; drawThemeGrid(); drawPreview(); drawActions() end
         elseif p1 == keys.up or p1 == keys.w then
-            if idx > 3 then selectedTheme = THEME_ORDER[idx - 3]; drawThemeGrid(); drawPreview(); drawActions() end
+            if idx > 3 then selectedTheme = THEME_ORDER[idx-3]; drawThemeGrid(); drawPreview(); drawActions() end
         elseif p1 == keys.down or p1 == keys.s then
-            if idx + 3 <= #THEME_ORDER then selectedTheme = THEME_ORDER[idx + 3]; drawThemeGrid(); drawPreview(); drawActions() end
+            if idx+3 <= #THEME_ORDER then selectedTheme = THEME_ORDER[idx+3]; drawThemeGrid(); drawPreview(); drawActions() end
         elseif p1 == keys.enter then
             applyTheme()
         elseif p1 == keys.backspace then
+            restoreCurrentPalette()
             break
         end
     end
