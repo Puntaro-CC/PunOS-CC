@@ -378,7 +378,8 @@ local pollTimer   = os.startTimer(0.5)
 local flashTimer  = nil
 local lastEvtState = false
 
-while true do
+local running = true
+while running do
     local e, p1, p2, p3 = os.pullEvent()
 
     if e == "timer" then
@@ -453,7 +454,7 @@ while true do
         for _, btn in ipairs(btnDefs) do
             if my == btn.y and mx >= btn.x1 and mx <= btn.x2 then
                 if btn.action == "back" then
-                    goto done
+                    running = false
                 else
                     btn.action()
                     drawFlightStatus()
@@ -465,7 +466,6 @@ while true do
     end
 end
 
-::done::
 term.setBackgroundColor(colors.black)
 term.clear()
 term.setCursorPos(1, 1)
