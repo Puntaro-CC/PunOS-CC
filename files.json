@@ -27,6 +27,7 @@
         "os/.updater":                      "/os/.updater",
         "os/.command":                      "/os/.command",
         "os/.ChatApp":                      "/os/.ChatApp",
+        "os/.netScan":                      "/os/.netScan",
         "audio/11_59_Naktigonis.dfpwm":     "/audio/11_59_Naktigonis.dfpwm",
         "audio/Devils_Never_Cry.dfpwm":     "/audio/Devils_Never_Cry.dfpwm",
         "audio/Judas_MetalRemix.dfpwm":     "/audio/Judas_MetalRemix.dfpwm",
