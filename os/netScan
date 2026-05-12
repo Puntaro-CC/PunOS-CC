@@ -1,0 +1,286 @@
+-- PunOS Network Scanner
+-- Discovers computers and known services on the rednet network
+
+os.pullEvent = os.pullEventRaw
+
+local UI = dofile("/os/loadTheme.lua")
+local w, h = term.getSize()
+
+local SCAN_PROTOCOL = "punos_scan"
+local SCAN_TIMEOUT  = 2
+local KNOWN_PROTOCOLS = {
+    "chat",
+    "nfp_share",
+    "punos_scan",
+}
+
+local modem = peripheral.find("modem")
+if not modem then
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1); term.setTextColor(UI.primary); term.write("PunOS")
+    term.setCursorPos(2, 2); term.setTextColor(UI.subtext);  term.write("Network Scanner")
+    term.setCursorPos(2, 5); term.setTextColor(UI.error);    term.write("No modem found. Attach a modem and try again.")
+    term.setCursorPos(2, 7); term.setTextColor(UI.subtext);  term.write("Press any key.")
+    os.pullEvent("key")
+    shell.run("os/.programs")
+    return
+end
+
+local modemName = peripheral.getName(modem)
+rednet.open(modemName)
+
+-- Results: list of {id, label, services={}}
+local results   = {}
+local scanning  = false
+local selectedIdx = 1
+local scrollOff   = 0
+
+local LIST_START = 5
+local LIST_END   = h - 3
+local listHeight = LIST_END - LIST_START + 1
+
+local function drawHeader()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1); term.setTextColor(UI.primary); term.write("PunOS")
+    term.setCursorPos(2, 2); term.setTextColor(UI.subtext);  term.write("Network Scanner")
+    local info = "ID:" .. os.getComputerID()
+    term.setCursorPos(w - #info - 1, 2); term.write(info)
+end
+
+local function drawStatus(msg, col)
+    term.setCursorPos(1, 4)
+    term.setBackgroundColor(UI.background)
+    term.clearLine()
+    term.setCursorPos(2, 4)
+    term.setTextColor(col or UI.subtext)
+    term.write(msg)
+end
+
+local function drawList()
+    for y = LIST_START, LIST_END do
+        term.setCursorPos(1, y)
+        term.setBackgroundColor(UI.background)
+        term.clearLine()
+    end
+
+    if #results == 0 then
+        term.setCursorPos(2, LIST_START + 1)
+        term.setTextColor(UI.subtext)
+        term.write("No computers found. Run a scan.")
+        return
+    end
+
+    for i = 1 + scrollOff, math.min(#results, listHeight + scrollOff) do
+        local y = LIST_START + (i - 1 - scrollOff)
+        local r = results[i]
+
+        if i == selectedIdx then
+            paintutils.drawFilledBox(1, y, w, y, UI.primary)
+            term.setTextColor(UI.background)
+        else
+            term.setTextColor(UI.text)
+        end
+
+        term.setCursorPos(2, y)
+        local label = r.label ~= "" and (" [" .. r.label .. "]") or ""
+        local services = #r.services > 0 and ("  {" .. table.concat(r.services, ", ") .. "}") or ""
+        local line = "ID:" .. r.id .. label .. services
+        if #line > w - 2 then line = line:sub(1, w - 5) .. "..." end
+        term.write(line)
+    end
+
+    if scrollOff > 0 then
+        term.setCursorPos(w - 5, LIST_START)
+        term.setBackgroundColor(UI.background); term.setTextColor(UI.subtext)
+        term.write("[^ up]")
+    end
+    if scrollOff + listHeight < #results then
+        term.setCursorPos(w - 7, LIST_END)
+        term.setBackgroundColor(UI.background); term.setTextColor(UI.subtext)
+        term.write("[v more]")
+    end
+end
+
+local scanBtn = {}
+local backBtn = {}
+
+local function drawActions()
+    paintutils.drawFilledBox(1, h - 2, w, h - 2, UI.border)
+    term.setCursorPos(1, h - 1)
+    term.setBackgroundColor(UI.background)
+    term.clearLine()
+
+    local sLabel = scanning and " Scanning... " or " Scan Network "
+    local bLabel = " Back "
+
+    local sx = 2
+    paintutils.drawFilledBox(sx, h - 1, sx + #sLabel - 1, h - 1, scanning and UI.border or UI.primary)
+    term.setCursorPos(sx, h - 1)
+    term.setTextColor(scanning and UI.subtext or UI.background)
+    term.write(sLabel)
+    scanBtn = {x1 = sx, y1 = h - 1, x2 = sx + #sLabel - 1, y2 = h - 1}
+
+    local bx = w - #bLabel
+    paintutils.drawFilledBox(bx, h - 1, w, h - 1, UI.border)
+    term.setCursorPos(bx, h - 1)
+    term.setTextColor(UI.text)
+    term.write(bLabel)
+    backBtn = {x1 = bx, y1 = h - 1, x2 = w, y2 = h - 1}
+
+    term.setCursorPos(1, h)
+    term.setBackgroundColor(UI.background)
+    term.clearLine()
+    term.setCursorPos(2, h)
+    term.setTextColor(UI.subtext)
+    term.write("Up/Down: select  |  Enter: scan")
+end
+
+local function redraw()
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    drawHeader()
+    drawStatus(#results > 0 and (#results .. " computer(s) found") or "Press Scan to discover computers.")
+    drawList()
+    drawActions()
+end
+
+local function doScan()
+    if scanning then return end
+    scanning = true
+    results  = {}
+    selectedIdx = 1
+    scrollOff   = 0
+
+    redraw()
+    drawStatus("Broadcasting ping...", UI.primary)
+
+    -- Broadcast a ping
+    rednet.broadcast({type = "punos_ping", from = os.getComputerID()}, SCAN_PROTOCOL)
+
+    -- Also look up each known service protocol to find named hosts
+    local serviceHosts = {}
+    for _, proto in ipairs(KNOWN_PROTOCOLS) do
+        -- rednet.lookup can return a single id or nil; we just note presence
+        local id = rednet.lookup(proto)
+        if id and id ~= os.getComputerID() then
+            if not serviceHosts[id] then serviceHosts[id] = {} end
+            table.insert(serviceHosts[id], proto)
+        end
+    end
+
+    -- Collect ping replies
+    local seen = {}
+    seen[os.getComputerID()] = true  -- don't list self
+
+    local deadline = os.clock() + SCAN_TIMEOUT
+    while os.clock() < deadline do
+        local remaining = deadline - os.clock()
+        local senderId, msg = rednet.receive(SCAN_PROTOCOL, remaining)
+        if senderId and not seen[senderId] then
+            seen[senderId] = true
+            local label = ""
+            if type(msg) == "table" and msg.label then
+                label = tostring(msg.label)
+            end
+            table.insert(results, {
+                id       = senderId,
+                label    = label,
+                services = serviceHosts[senderId] or {},
+            })
+            -- Merge any service info we found via lookup
+            drawStatus("Found " .. #results .. " computer(s)...", UI.primary)
+        end
+    end
+
+    -- Add any service hosts we found via lookup but didn't respond to ping
+    for id, svcs in pairs(serviceHosts) do
+        if not seen[id] then
+            table.insert(results, {id = id, label = "", services = svcs})
+        end
+    end
+
+    -- Sort by ID
+    table.sort(results, function(a, b) return a.id < b.id end)
+
+    scanning = false
+    redraw()
+    drawStatus(#results > 0 and (#results .. " computer(s) found.") or "No computers responded.", #results > 0 and UI.success or UI.subtext)
+end
+
+-- Handle incoming pings while the scanner is open (so other scanners see us)
+local function listenLoop()
+    while true do
+        local senderId, msg, proto = rednet.receive(SCAN_PROTOCOL)
+        if type(msg) == "table" and msg.type == "punos_ping" then
+            rednet.send(senderId, {
+                type  = "punos_pong",
+                label = os.getComputerLabel() or "",
+            }, SCAN_PROTOCOL)
+        end
+    end
+end
+
+local function uiLoop()
+    redraw()
+
+    while true do
+        local e, p1, p2, p3 = os.pullEvent()
+
+        if e == "key" then
+            if p1 == keys.up or p1 == keys.w then
+                if selectedIdx > 1 then
+                    selectedIdx = selectedIdx - 1
+                    if selectedIdx - 1 < scrollOff then scrollOff = selectedIdx - 1 end
+                    drawList(); drawActions()
+                end
+            elseif p1 == keys.down or p1 == keys.s then
+                if selectedIdx < #results then
+                    selectedIdx = selectedIdx + 1
+                    if selectedIdx - 1 >= scrollOff + listHeight then scrollOff = selectedIdx - listHeight end
+                    drawList(); drawActions()
+                end
+            elseif p1 == keys.enter then
+                os.queueEvent("do_scan")
+            elseif p1 == keys.backspace then
+                break
+            end
+
+        elseif e == "do_scan" then
+            doScan()
+
+        elseif e == "mouse_click" then
+            local mx, my = p2, p3
+            if mx >= scanBtn.x1 and mx <= scanBtn.x2 and my == scanBtn.y1 then
+                os.queueEvent("do_scan")
+            elseif mx >= backBtn.x1 and mx <= backBtn.x2 and my == backBtn.y1 then
+                break
+            else
+                for i = 1 + scrollOff, math.min(#results, listHeight + scrollOff) do
+                    local y = LIST_START + (i - 1 - scrollOff)
+                    if my == y then
+                        selectedIdx = i
+                        drawList(); drawActions()
+                        break
+                    end
+                end
+            end
+
+        elseif e == "mouse_scroll" then
+            if p1 == 1 and scrollOff + listHeight < #results then
+                scrollOff = scrollOff + 1; drawList()
+            elseif p1 == -1 and scrollOff > 0 then
+                scrollOff = scrollOff - 1; drawList()
+            end
+        end
+    end
+end
+
+parallel.waitForAny(uiLoop, listenLoop)
+
+rednet.close(modemName)
+term.setBackgroundColor(colors.black)
+term.clear()
+term.setCursorPos(1, 1)
+shell.run("os/.programs")
