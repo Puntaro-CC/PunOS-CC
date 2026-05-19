@@ -57,7 +57,8 @@ if sCommand == "host" then
 
     if not openModem() then return end
 
-    rednet.host("chat", sHostname)
+    -- Original host layout naming convention
+    rednet.host("chat", "chat_" .. sHostname)
 
     term.clear()
     term.setCursorPos(1, 1)
@@ -107,19 +108,6 @@ if sCommand == "host" then
         end
     end
 
-    local function scanListenerLoop()
-        while true do
-            local senderId, msg = rednet.receive("punos_scan")
-            if type(msg) == "table" and msg.type == "punos_ping" then
-                rednet.send(senderId, {
-                    type    = "punos_pong",
-                    label   = sHostname,
-                    service = "chat",
-                }, "punos_scan")
-            end
-        end
-    end
-
     local function quitLoop()
         while true do
             local _, key = os.pullEvent("key")
@@ -127,14 +115,14 @@ if sCommand == "host" then
         end
     end
 
-    parallel.waitForAny(chatHostLoop, scanListenerLoop, quitLoop)
+    parallel.waitForAny(chatHostLoop, quitLoop)
 
     -- Broadcast closing notice
     for nSubID, _ in pairs(tSubscribers) do
         rednet.send(nSubID, { sType = "message", sText = "Server shutting down.", bSystem = true }, "chat")
     end
 
-    rednet.unhost("chat", sHostname)
+    rednet.unhost("chat", "chat_" .. sHostname)
     closeModem()
     term.clear()
     term.setCursorPos(1, 1)
@@ -155,7 +143,8 @@ elseif sCommand == "join" then
     term.setCursorPos(1, 1)
     print("Searching for chat server '" .. sHostname .. "'...")
 
-    local nHostID = rednet.lookup("chat", sHostname)
+    -- Original resolution matching pattern
+    local nHostID = rednet.lookup("chat", "chat_" .. sHostname)
     if nHostID == nil then
         print("Could not find server.")
         closeModem()
@@ -167,6 +156,7 @@ elseif sCommand == "join" then
 
     local timeoutTimer = os.startTimer(5)
     local bConnected = false
+    local nUserID = nil
 
     while true do
         local sEvent, p1, p2, p3 = os.pullEvent()
@@ -175,6 +165,7 @@ elseif sCommand == "join" then
         elseif sEvent == "rednet_message" and p1 == nHostID and p3 == "chat" then
             if type(p2) == "table" and p2.sType == "join_ack" then
                 bConnected = true
+                nUserID = p2.nUserID or os.getComputerID()
                 break
             end
         end
@@ -186,7 +177,7 @@ elseif sCommand == "join" then
         return
     end
 
-    -- UI Setup
+    -- Original Visual Windows Setup
     local parentTerm = term.current()
     local w, h = term.getSize()
 
@@ -247,7 +238,7 @@ elseif sCommand == "join" then
                     end
                 end,
                 function()
-                    -- User input thread
+                    -- Original Text-Wrapping Input Thread
                     while true do
                         term.redirect(inputWindow)
                         inputWindow.setBackgroundColor(UI.border)
@@ -263,6 +254,7 @@ elseif sCommand == "join" then
                         elseif sChat and sChat ~= "" then
                             rednet.send(nHostID, {
                                 sType = "chat",
+                                nUserID = nUserID,
                                 sText = sChat,
                             }, "chat")
                             table.insert(tSendHistory, sChat)
@@ -273,6 +265,7 @@ elseif sCommand == "join" then
         end
     )
 
+    -- Close windows gracefully and restore parent UI terminal frames
     term.redirect(parentTerm)
     local _, finalH = term.getSize()
     term.setCursorPos(1, finalH)
@@ -282,8 +275,8 @@ elseif sCommand == "join" then
         printError(error)
     end
 
-    -- Logout
-    rednet.send(nHostID, { sType = "logout" }, "chat")
+    -- Logout sequence
+    rednet.send(nHostID, { sType = "logout", nUserID = nUserID }, "chat")
     closeModem()
 
     messageHistory = nil
