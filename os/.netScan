@@ -21,8 +21,8 @@ end
 
 rednet.open(peripheral.getName(modem))
 
-local SCAN_PROTOCOL = "punos_scan"
-local SCAN_TIMEOUT  = 2
+-- Original design: Servers register under standard protocols but use custom naming conventions.
+-- rednet.lookup returns all hosts on a protocol as a table when no name given.
 
 local results     = {}
 local scanning    = false
@@ -85,7 +85,7 @@ local function drawList()
             end
 
             local label = (r.label and r.label ~= "") and (" (" .. r.label .. ")") or ""
-            local line  = "ID: " .. tostring(r.id) .. "  [" .. r.service .. "]" .. label
+            local line  = "ID: " .. tostring(r.id) .. "  " .. r.service .. label
             line = line .. string.rep(" ", w - #line - 2)
             term.write(line:sub(1, w - 2))
         end
@@ -103,7 +103,7 @@ local function drawActions()
     if r and #results > 0 then
         term.setCursorPos(2, actY)
         term.setTextColor(UI.primary)
-        term.write("Press ENTER to connect to server " .. tostring(r.id))
+        term.write("Press ENTER to connect")
     end
 end
 
@@ -115,56 +115,30 @@ local function doScan()
     drawList()
     drawActions()
 
-    -- 1. Custom Active Ping Broadcast
-    rednet.broadcast({ type = "punos_ping" }, SCAN_PROTOCOL)
-
-    local timerId = os.startTimer(SCAN_TIMEOUT)
     local seen = {}
-
-    while true do
-        local e, p1, p2, p3 = os.pullEvent()
-        if e == "timer" and p1 == timerId then
-            break
-        elseif e == "rednet_message" then
-            local senderId = p1
-            local msg = p2
-            local protocol = p3
-
-            if protocol == SCAN_PROTOCOL and type(msg) == "table" and msg.type == "punos_pong" then
-                if senderId ~= os.getComputerID() and not seen[senderId] then
-                    seen[senderId] = true
-                    table.insert(results, {
-                        id      = senderId,
-                        label   = msg.label or "",
-                        service = msg.service or "unknown",
-                    })
-                    drawList()
-                    drawActions()
-                end
-            end
-        end
-    end
-
-    -- 2. Fallback to querying known Rednet Daemon registrations
+    
+    -- Original design lookup patterns
     local lookups = {
-        {proto = "nfp_share", label = "fileshare"},
-        {proto = "chat",      label = "chat"},
+        { proto = "nfp_share", label = "fileshare" },
+        { proto = "chat",      label = "chat" }
     }
 
     for _, entry in ipairs(lookups) do
-        -- Fix: rednet.lookup returns an array (table) of IDs, or nil
+        -- Fix: CC returns a table array of host IDs when no hostname is passed to rednet.lookup
         local ids = rednet.lookup(entry.proto)
         if ids then
-            -- If it happens to return a single ID instead of a table in older forks, handle it safely
-            if type(ids) ~= "table" then ids = {ids} end
+            if type(ids) ~= "table" then ids = {ids} end -- Safe fallback if single ID returned
             
             for _, id in ipairs(ids) do
                 if id ~= os.getComputerID() and not seen[id] then
                     seen[id] = true
+                    
+                    -- To respect your original configuration where servers register unique hostnames,
+                    -- we can add them to our visible result list.
                     table.insert(results, {
                         id      = id,
-                        label   = "",
-                        service = entry.label,
+                        label   = "", 
+                        service = entry.label
                     })
                 end
             end
@@ -202,10 +176,8 @@ local function uiLoop()
                     if r.service == "fileshare" then
                         shell.run("os/programs/shareClient.lua", tostring(r.id))
                     elseif r.service == "chat" then
+                        -- Connects via original parameters
                         shell.run("os/programs/publicChat.lua", "join", "Server", "User" .. os.getComputerID())
-                    else
-                        print("Unknown service connection protocol.")
-                        sleep(1.5)
                     end
                     break
                 end
@@ -236,16 +208,16 @@ local function uiLoop()
     end
 end
 
--- Respond to active discovery pings from other scanners while open
+-- Original background listener loop
 local function listenLoop()
     while true do
-        local senderId, msg = rednet.receive(SCAN_PROTOCOL)
+        local senderId, msg = rednet.receive("punos_scan")
         if type(msg) == "table" and msg.type == "punos_ping" then
             rednet.send(senderId, {
                 type    = "punos_pong",
                 label   = os.getComputerLabel() or "",
                 service = "punos_client",
-            }, SCAN_PROTOCOL)
+            }, "punos_scan")
         end
     end
 end
