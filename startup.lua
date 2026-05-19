@@ -1,11 +1,9 @@
 -- PunOS Startup
--- First boot: full logo animation + theme selection
--- Subsequent boots: quick wake animation
 
 local w, h = term.getSize()
-local BOOT_FLAG   = "/.punos_booted"
-local THEME_FILE  = "/.theme"
-local VER_FILE    = "/.punos_version"
+local BOOT_FLAG  = "/.punos_booted"
+local THEME_FILE = "/.theme"
+local VER_FILE   = "/.punos_version"
 
 local function readVersion()
     if not fs.exists(VER_FILE) then return "?" end
@@ -26,10 +24,8 @@ local function loadTheme()
     return dofile("/os/loadTheme.lua")
 end
 
--- ---- Quick wake animation (subsequent boots) ----
 local function quickBoot()
     local UI = loadTheme()
-
     term.setBackgroundColor(colors.black)
     term.clear()
 
@@ -64,7 +60,6 @@ local function quickBoot()
     term.clear()
 end
 
--- ---- First boot: full logo animation + theme selection ----
 local function firstBoot()
     local logoLines = {
         " ____  _   _ _   _  ___  ____  ",
@@ -106,30 +101,87 @@ local function firstBoot()
 
     sleep(0.6)
 
+    -- ---- Username screen ----
+    term.setBackgroundColor(colors.black)
+    term.clear()
+
+    paintutils.drawFilledBox(1, 1, w, 2, colors.gray)
+    term.setCursorPos(2, 1)
+    term.setTextColor(colors.orange)
+    term.write("PunOS")
+    term.setCursorPos(2, 2)
+    term.setTextColor(colors.lightGray)
+    term.write("First Boot Setup  (1/2)")
+
+    local uPrompt = "Choose a username:"
+    local uSub    = "Used for chat and to identify your computer."
+    term.setCursorPos(math.floor((w - #uPrompt) / 2), 5)
+    term.setTextColor(colors.white)
+    term.write(uPrompt)
+    term.setCursorPos(math.floor((w - #uSub) / 2), 6)
+    term.setTextColor(colors.lightGray)
+    term.write(uSub)
+
+    local username = ""
+    while true do
+        -- Input box
+        local boxW = math.min(24, w - 6)
+        local boxX = math.floor((w - boxW) / 2)
+        paintutils.drawFilledBox(boxX, 8, boxX + boxW - 1, 8, colors.gray)
+        term.setCursorPos(boxX + 1, 8)
+        term.setTextColor(colors.white)
+        term.setBackgroundColor(colors.gray)
+
+        username = read()
+        username = username:match("^%s*(.-)%s*$")  -- trim whitespace
+
+        if #username > 0 then
+            break
+        end
+
+        -- Empty input feedback
+        term.setBackgroundColor(colors.black)
+        term.setCursorPos(math.floor((w - 22) / 2), 10)
+        term.setTextColor(colors.red)
+        term.write("Username cannot be empty.")
+    end
+
+    os.setComputerLabel(username)
+
+    term.setBackgroundColor(colors.black)
+    term.setCursorPos(math.floor((w - (#username + 10)) / 2), 10)
+    term.setTextColor(colors.lime)
+    term.write("Hello, " .. username .. "!")
+    sleep(0.8)
+
     -- ---- Theme selection ----
     term.setBackgroundColor(colors.black)
     term.clear()
 
-    local welcome = "Welcome to PunOS v" .. VERSION
-    local prompt  = "Choose your colour theme:"
-    term.setCursorPos(math.floor((w - #welcome) / 2), 2)
+    paintutils.drawFilledBox(1, 1, w, 2, colors.gray)
+    term.setCursorPos(2, 1)
     term.setTextColor(colors.orange)
-    term.write(welcome)
-    term.setCursorPos(math.floor((w - #prompt) / 2), 3)
+    term.write("PunOS")
+    term.setCursorPos(2, 2)
+    term.setTextColor(colors.lightGray)
+    term.write("First Boot Setup  (2/2)")
+
+    local prompt = "Choose your colour theme:"
+    term.setCursorPos(math.floor((w - #prompt) / 2), 4)
     term.setTextColor(colors.lightGray)
     term.write(prompt)
 
     local themes = {
-        {key="classic",  name="Classic",  primary=colors.orange,  border=colors.gray},
-        {key="popos",    name="Pop_OS",   primary=colors.purple,  border=colors.gray},
-        {key="hacker",   name="Hacker",   primary=colors.lime,    border=colors.gray},
-        {key="ocean",    name="Ocean",    primary=colors.cyan,    border=colors.gray},
-        {key="midnight", name="Midnight", primary=colors.blue,    border=colors.gray},
+        {key="classic",  name="Classic",  primary=colors.orange, border=colors.gray},
+        {key="popos",    name="Pop_OS",   primary=colors.purple, border=colors.gray},
+        {key="hacker",   name="Hacker",   primary=colors.lime,   border=colors.gray},
+        {key="ocean",    name="Ocean",    primary=colors.cyan,   border=colors.gray},
+        {key="midnight", name="Midnight", primary=colors.blue,   border=colors.gray},
     }
 
     local selected = 1
     local tileW   = math.floor((w - 2) / #themes)
-    local tStartY = 5
+    local tStartY = 6
     local tBtns   = {}
 
     local function drawTiles()
@@ -160,7 +212,7 @@ local function firstBoot()
     end
 
     local function drawConfirm()
-        local row = tStartY + 7
+        local row = tStartY + 6
         local hint = "Left/Right or click to choose  |  Enter to confirm"
         term.setCursorPos(math.floor((w - #hint) / 2), row)
         term.setBackgroundColor(colors.black)
@@ -201,7 +253,6 @@ local function firstBoot()
     f.write(themes[selected].key)
     f.close()
 
-    -- Inline the selected theme colors directly -- theme.lua may not exist yet
     local UI = {
         primary    = themes[selected].primary,
         border     = themes[selected].border,
@@ -226,7 +277,7 @@ local function firstBoot()
     local barW = math.floor(w * 0.7)
     local barX = math.floor((w - barW) / 2)
     local barY = math.floor(h / 2) + 1
-    local msgY  = barY - 1
+    local msgY = barY - 1
 
     paintutils.drawFilledBox(barX, barY, barX + barW - 1, barY, UI.border)
 
@@ -251,7 +302,7 @@ local function firstBoot()
     term.clear()
 end
 
--- ---- Entry point ----
+-- Boot sequence
 if fs.exists(BOOT_FLAG) then
     quickBoot()
 else
