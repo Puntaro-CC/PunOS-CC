@@ -61,6 +61,7 @@ if sCommand == "host" then
         return
     end
     rednet.host("chat", sHostname)
+    rednet.host("punos", "chat_" .. sHostname)
     
     -- Check for monitor and use it if available
     local monitor = peripheral.find("monitor")
