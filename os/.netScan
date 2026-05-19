@@ -1,18 +1,9 @@
 -- PunOS Network Scanner
--- Discovers computers and known services on the rednet network
 
 os.pullEvent = os.pullEventRaw
 
 local UI = dofile("/os/loadTheme.lua")
 local w, h = term.getSize()
-
-local SCAN_PROTOCOL = "punos_scan"
-local SCAN_TIMEOUT  = 2
-local KNOWN_PROTOCOLS = {
-    "chat",
-    "nfp_share",
-    "punos_scan",
-}
 
 local modem = peripheral.find("modem")
 if not modem then
@@ -21,25 +12,34 @@ if not modem then
     paintutils.drawFilledBox(1, 1, w, 2, UI.border)
     term.setCursorPos(2, 1); term.setTextColor(UI.primary); term.write("PunOS")
     term.setCursorPos(2, 2); term.setTextColor(UI.subtext);  term.write("Network Scanner")
-    term.setCursorPos(2, 5); term.setTextColor(UI.error);    term.write("No modem found. Attach a modem and try again.")
+    term.setCursorPos(2, 5); term.setTextColor(UI.error);    term.write("No modem found.")
     term.setCursorPos(2, 7); term.setTextColor(UI.subtext);  term.write("Press any key.")
     os.pullEvent("key")
     shell.run("os/.programs")
     return
 end
 
-local modemName = peripheral.getName(modem)
-rednet.open(modemName)
+rednet.open(peripheral.getName(modem))
 
--- Results: list of {id, label, services={}}
-local results   = {}
-local scanning  = false
+-- rednet.lookup returns all hosts on a protocol as a table when no name given,
+-- but CC's implementation actually only returns one ID. We work around this by
+-- looking up known name patterns instead, since servers register with
+-- "chat_<name>" and "fileshare_<name>" as their hostname on the punos protocol.
+-- We query the raw protocol and collect via broadcast instead.
+
+local SCAN_PROTOCOL = "punos_scan"
+local SCAN_TIMEOUT  = 2
+
+local results     = {}
+local scanning    = false
 local selectedIdx = 1
 local scrollOff   = 0
 
 local LIST_START = 5
 local LIST_END   = h - 3
 local listHeight = LIST_END - LIST_START + 1
+local scanBtn    = {}
+local backBtn    = {}
 
 local function drawHeader()
     paintutils.drawFilledBox(1, 1, w, 2, UI.border)
@@ -68,7 +68,7 @@ local function drawList()
     if #results == 0 then
         term.setCursorPos(2, LIST_START + 1)
         term.setTextColor(UI.subtext)
-        term.write("No computers found. Run a scan.")
+        term.write("No servers found. Press Scan.")
         return
     end
 
@@ -84,9 +84,9 @@ local function drawList()
         end
 
         term.setCursorPos(2, y)
-        local label = r.label ~= "" and (" [" .. r.label .. "]") or ""
-        local services = #r.services > 0 and ("  {" .. table.concat(r.services, ", ") .. "}") or ""
-        local line = "ID:" .. r.id .. label .. services
+        -- Format: "ID:5  chat_general  [ComputerLabel]"
+        local label = r.label ~= "" and ("  [" .. r.label .. "]") or ""
+        local line  = "ID:" .. r.id .. "  " .. r.service .. label
         if #line > w - 2 then line = line:sub(1, w - 5) .. "..." end
         term.write(line)
     end
@@ -102,9 +102,6 @@ local function drawList()
         term.write("[v more]")
     end
 end
-
-local scanBtn = {}
-local backBtn = {}
 
 local function drawActions()
     paintutils.drawFilledBox(1, h - 2, w, h - 2, UI.border)
@@ -134,14 +131,14 @@ local function drawActions()
     term.clearLine()
     term.setCursorPos(2, h)
     term.setTextColor(UI.subtext)
-    term.write("Up/Down: select  |  Enter: scan")
+    term.write("Up/Down: select  |  Enter: scan  |  Backspace: back")
 end
 
 local function redraw()
     term.setBackgroundColor(UI.background)
     term.clear()
     drawHeader()
-    drawStatus(#results > 0 and (#results .. " computer(s) found") or "Press Scan to discover computers.")
+    drawStatus(#results > 0 and (#results .. " server(s) found") or "Press Scan to discover servers.")
     drawList()
     drawActions()
 end
@@ -152,79 +149,67 @@ local function doScan()
     results  = {}
     selectedIdx = 1
     scrollOff   = 0
-
     redraw()
-    drawStatus("Broadcasting ping...", UI.primary)
+    drawStatus("Scanning for PunOS servers...", UI.primary)
 
-    -- Broadcast a ping
-    rednet.broadcast({type = "punos_ping", from = os.getComputerID()}, SCAN_PROTOCOL)
+    -- Broadcast a ping on our scan protocol
+    -- Servers running .server or publicChat host will NOT respond to this directly,
+    -- but we can discover them via rednet.lookup on their specific protocols.
+    -- We also send a ping for any server that has netScan open (listenLoop below).
+    rednet.broadcast({ type = "punos_ping", from = os.getComputerID() }, SCAN_PROTOCOL)
 
-    -- Also look up each known service protocol to find named hosts
-    local serviceHosts = {}
-    for _, proto in ipairs(KNOWN_PROTOCOLS) do
-        -- rednet.lookup can return a single id or nil; we just note presence
-        local id = rednet.lookup(proto)
-        if id and id ~= os.getComputerID() then
-            if not serviceHosts[id] then serviceHosts[id] = {} end
-            table.insert(serviceHosts[id], proto)
-        end
-    end
-
-    -- Collect ping replies
+    -- Collect any punos_scan pong replies (computers with netScan open)
     local seen = {}
-    seen[os.getComputerID()] = true  -- don't list self
+    seen[os.getComputerID()] = true
 
     local deadline = os.clock() + SCAN_TIMEOUT
     while os.clock() < deadline do
         local remaining = deadline - os.clock()
         local senderId, msg = rednet.receive(SCAN_PROTOCOL, remaining)
-        if senderId and not seen[senderId] then
+        if senderId and type(msg) == "table" and msg.type == "punos_pong" and not seen[senderId] then
             seen[senderId] = true
-            local label = ""
-            if type(msg) == "table" and msg.label then
-                label = tostring(msg.label)
-            end
             table.insert(results, {
-                id       = senderId,
-                label    = label,
-                services = serviceHosts[senderId] or {},
+                id      = senderId,
+                label   = msg.label or "",
+                service = msg.service or "punos",
             })
-            -- Merge any service info we found via lookup
-            drawStatus("Found " .. #results .. " computer(s)...", UI.primary)
+            drawStatus("Found " .. #results .. " server(s)...", UI.primary)
+            drawList()
         end
     end
 
-    -- Add any service hosts we found via lookup but didn't respond to ping
-    for id, svcs in pairs(serviceHosts) do
-        if not seen[id] then
-            table.insert(results, {id = id, label = "", services = svcs})
+    -- Query known protocols directly — these work even without ping/pong
+    -- because the servers call rednet.host() which registers with the rednet daemon
+    local lookups = {
+        {proto = "nfp_share", label = "fileshare"},
+        {proto = "chat",      label = "chat"},
+    }
+
+    for _, entry in ipairs(lookups) do
+        -- rednet.lookup with no name returns one ID or nil
+        -- We call it in a loop fishing for multiple by name if we know them,
+        -- but without names we can only get one. Still useful for the common case.
+        local id = rednet.lookup(entry.proto)
+        if id and id ~= os.getComputerID() and not seen[id] then
+            seen[id] = true
+            table.insert(results, {
+                id      = id,
+                label   = "",
+                service = entry.label,
+            })
         end
     end
 
-    -- Sort by ID
     table.sort(results, function(a, b) return a.id < b.id end)
 
     scanning = false
     redraw()
-    drawStatus(#results > 0 and (#results .. " computer(s) found.") or "No computers responded.", #results > 0 and UI.success or UI.subtext)
-end
-
--- Handle incoming pings while the scanner is open (so other scanners see us)
-local function listenLoop()
-    while true do
-        local senderId, msg, proto = rednet.receive(SCAN_PROTOCOL)
-        if type(msg) == "table" and msg.type == "punos_ping" then
-            rednet.send(senderId, {
-                type  = "punos_pong",
-                label = os.getComputerLabel() or "",
-            }, SCAN_PROTOCOL)
-        end
-    end
+    local msg = #results > 0 and (#results .. " server(s) found.") or "No servers found."
+    drawStatus(msg, #results > 0 and UI.success or UI.subtext)
 end
 
 local function uiLoop()
     redraw()
-
     while true do
         local e, p1, p2, p3 = os.pullEvent()
 
@@ -242,27 +227,22 @@ local function uiLoop()
                     drawList(); drawActions()
                 end
             elseif p1 == keys.enter then
-                os.queueEvent("do_scan")
+                doScan()
             elseif p1 == keys.backspace then
                 break
             end
 
-        elseif e == "do_scan" then
-            doScan()
-
         elseif e == "mouse_click" then
             local mx, my = p2, p3
             if mx >= scanBtn.x1 and mx <= scanBtn.x2 and my == scanBtn.y1 then
-                os.queueEvent("do_scan")
+                doScan()
             elseif mx >= backBtn.x1 and mx <= backBtn.x2 and my == backBtn.y1 then
                 break
             else
                 for i = 1 + scrollOff, math.min(#results, listHeight + scrollOff) do
                     local y = LIST_START + (i - 1 - scrollOff)
                     if my == y then
-                        selectedIdx = i
-                        drawList(); drawActions()
-                        break
+                        selectedIdx = i; drawList(); drawActions(); break
                     end
                 end
             end
@@ -277,9 +257,23 @@ local function uiLoop()
     end
 end
 
+-- Respond to pings from other scanners while this UI is open
+local function listenLoop()
+    while true do
+        local senderId, msg = rednet.receive(SCAN_PROTOCOL)
+        if type(msg) == "table" and msg.type == "punos_ping" then
+            rednet.send(senderId, {
+                type    = "punos_pong",
+                label   = os.getComputerLabel() or "",
+                service = "punos_client",
+            }, SCAN_PROTOCOL)
+        end
+    end
+end
+
 parallel.waitForAny(uiLoop, listenLoop)
 
-rednet.close(modemName)
+rednet.close(peripheral.getName(modem))
 term.setBackgroundColor(colors.black)
 term.clear()
 term.setCursorPos(1, 1)
