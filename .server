@@ -1,7 +1,6 @@
 -- PunOS File Share Server v5.2
 
 local PROTOCOL    = "nfp_share"
-local SCAN_PROTOCOL = "punos_scan"
 local CONFIG_FILE = "/.server_config"
 local DIR_PAINT   = "/.server_files/paint"
 local DIR_AUDIO   = "/.server_files/audio"
@@ -46,7 +45,8 @@ if configExists then
     term.setTextColor(colors.lime)
     print("Loaded saved server ID: " .. serverID)
 else
-    serverID = "FS_SERVER_" .. tostring(os.getComputerID())
+    -- Original design file share system naming convention
+    serverID = "fileshare_" .. tostring(os.getComputerID())
     local f = fs.open(CONFIG_FILE, "w")
     f.write(serverID)
     f.close()
@@ -55,7 +55,6 @@ else
     print("Generated new server ID: " .. serverID)
 end
 
--- Host via standard CC Rednet lookup daemon daemon
 rednet.host(PROTOCOL, serverID)
 term.setTextColor(colors.lightGray)
 print("Registered host under protocol '" .. PROTOCOL .. "'")
@@ -103,7 +102,6 @@ local function deleteFileFromDisk(fileType, filename)
     return false
 end
 
--- Server database mock configuration loading
 local store = {}
 local function rebuildStore()
     store = {}
@@ -118,101 +116,83 @@ local function rebuildStore()
 end
 rebuildStore()
 
-local function mainServerLoop()
-    while true do
-        local senderID, message, protocol = rednet.receive(PROTOCOL)
-        if type(message) == "table" and message.action then
-            local action = message.action
-            local fileType = message.fileType
+-- Main processing loop
+while true do
+    local senderID, message, protocol = rednet.receive(PROTOCOL)
+    if type(message) == "table" and message.action then
+        local action = message.action
+        local fileType = message.fileType
 
-            if action == "upload" then
-                local filename = message.filename
-                if store[filename] then
-                    rednet.send(senderID, {success = false, message = "File already exists"}, PROTOCOL)
-                else
-                    store[filename] = {
-                        uploader  = senderID,
-                        recipient = message.recipient, -- nil if public
-                        data      = message.data,
-                        type      = fileType
-                    }
-                    saveFileToDisk(fileType, filename, message.data)
-                    local visibility = message.recipient and ("PRIVATE to ID " .. message.recipient) or "PUBLIC"
-                    log(colors.lime, "[UPLOAD:" .. fileType .. "] " .. filename .. " (" .. visibility .. ") from ID:" .. senderID)
-                    rednet.send(senderID, {success = true, message = "Uploaded successfully"}, PROTOCOL)
+        if action == "upload" then
+            local filename = message.filename
+            if store[filename] then
+                rednet.send(senderID, {success = false, message = "File already exists"}, PROTOCOL)
+            else
+                store[filename] = {
+                    uploader  = senderID,
+                    recipient = message.recipient,
+                    data      = message.data,
+                    type      = fileType
+                }
+                saveFileToDisk(fileType, filename, message.data)
+                local visibility = message.recipient and ("PRIVATE to ID " .. message.recipient) or "PUBLIC"
+                log(colors.lime, "[UPLOAD:" .. fileType .. "] " .. filename .. " (" .. visibility .. ") from ID:" .. senderID)
+                rednet.send(senderID, {success = true, message = "Uploaded successfully"}, PROTOCOL)
+            end
+
+        elseif action == "download" then
+            local filename = message.filename
+            local fileData = store[filename]
+            
+            if not fileData then
+                local checkedData = loadFileFromDisk("paint", filename) or loadFileFromDisk("audio", filename)
+                if checkedData then
+                    rebuildStore()
+                    fileData = store[filename]
                 end
-
-            elseif action == "download" then
-                local filename = message.filename
-                local fileData = store[filename]
-                
-                -- Check disk lazy fallback
-                if not fileData then
-                    local checkedData = loadFileFromDisk("paint", filename) or loadFileFromDisk("audio", filename)
-                    if checkedData then
-                        rebuildStore()
-                        fileData = store[filename]
-                    end
-                else
-                    if fileData.data == "disk_stored" then
-                        fileData.data = loadFileFromDisk(fileData.type, filename)
-                    end
+            else
+                if fileData.data == "disk_stored" then
+                    fileData.data = loadFileFromDisk(fileData.type, filename)
                 end
+            end
 
-                if not fileData then
-                    rednet.send(senderID, {success = false, message = "File not found"}, PROTOCOL)
-                elseif fileData.recipient and fileData.recipient ~= senderID and fileData.uploader ~= senderID then
-                    rednet.send(senderID, {success = false, message = "Access denied"}, PROTOCOL)
-                else
-                    log(colors.cyan, "[DOWNLOAD:" .. fileData.type .. "] " .. filename)
-                    rednet.send(senderID, {success = true, data = fileData.data, filename = filename}, PROTOCOL)
-                    if fileData.recipient then
-                        store[filename] = nil
-                        deleteFileFromDisk(fileData.type, filename)
-                        log(colors.gray, "[REMOVED] " .. filename .. " (one-time)")
-                    end
-                end
-
-            elseif action == "list" then
-                local fileList = {}
-                for name, dataEntry in pairs(store) do
-                    if not dataEntry.recipient or dataEntry.recipient == senderID or dataEntry.uploader == senderID then
-                        table.insert(fileList, {name = name, public = not dataEntry.recipient})
-                    end
-                end
-                log(colors.yellow, "[LIST] Request from ID:" .. senderID)
-                rednet.send(senderID, {success = true, files = fileList}, PROTOCOL)
-
-            elseif action == "delete" then
-                local filename = message.filename
-                local fileData = store[filename]
-                if not fileData then
-                    rednet.send(senderID, {success = false, message = "File not found"}, PROTOCOL)
-                elseif fileData.uploader ~= senderID then
-                    rednet.send(senderID, {success = false, message = "Not authorised"}, PROTOCOL)
-                else
-                    local savedType = fileData.type
+            if not fileData then
+                rednet.send(senderID, {success = false, message = "File not found"}, PROTOCOL)
+            elseif fileData.recipient and fileData.recipient ~= senderID and fileData.uploader ~= senderID then
+                rednet.send(senderID, {success = false, message = "Access denied"}, PROTOCOL)
+            else
+                log(colors.cyan, "[DOWNLOAD:" .. fileData.type .. "] " .. filename)
+                rednet.send(senderID, {success = true, data = fileData.data, filename = filename}, PROTOCOL)
+                if fileData.recipient then
                     store[filename] = nil
-                    deleteFileFromDisk(savedType, filename)
-                    log(colors.orange, "[DELETE:" .. savedType .. "] " .. filename)
-                    rednet.send(senderID, {success = true, message = "File deleted"}, PROTOCOL)
+                    deleteFileFromDisk(fileData.type, filename)
+                    log(colors.gray, "[REMOVED] " .. filename .. " (one-time)")
                 end
+            end
+
+        elseif action == "list" then
+            local fileList = {}
+            for name, fData in pairs(store) do
+                if not fData.recipient or fData.recipient == senderID then
+                    table.insert(fileList, {name = name, public = not fData.recipient})
+                end
+            end
+            log(colors.yellow, "[LIST:" .. fileType .. "] from ID:" .. senderID)
+            rednet.send(senderID, {success = true, files = fileList}, PROTOCOL)
+
+        elseif action == "delete" then
+            local filename = message.filename
+            local fileData = store[filename]
+            if not fileData then
+                rednet.send(senderID, {success = false, message = "File not found"}, PROTOCOL)
+            elseif fileData.uploader ~= senderID then
+                rednet.send(senderID, {success = false, message = "Not authorised"}, PROTOCOL)
+            else
+                store[filename] = nil
+                deleteFileFromDisk(fileType, filename)
+                log(colors.orange, "[DELETE:" .. fileType .. "] " .. filename)
+                rednet.send(senderID, {success = true, message = "File deleted"}, PROTOCOL)
             end
         end
     end
 end
-
-local function scanListenerLoop()
-    while true do
-        local senderId, msg = rednet.receive(SCAN_PROTOCOL)
-        if type(msg) == "table" and msg.type == "punos_ping" then
-            rednet.send(senderId, {
-                type    = "punos_pong",
-                label   = os.getComputerLabel() or "File Share",
-                service = "fileshare",
-            }, SCAN_PROTOCOL)
-        end
-    end
-end
-
-parallel.waitForAny(mainServerLoop, scanListenerLoop)
