@@ -1,324 +1,300 @@
 -- PunOS Updater
--- Incremental updates gated by version.json commits, rollback, kernel awareness
 
 os.pullEvent = os.pullEventRaw
 
 local UI = dofile("/os/loadTheme.lua")
 local w, h = term.getSize()
 
--- ---- Read installed kernel --------------------------------------------------
-
+local REPO_RAW     = "https://raw.githubusercontent.com/Puntaro-CC/PunOS-CC/"
+local API_BASE     = "https://api.github.com/repos/Puntaro-CC/PunOS-CC/"
+local LOCAL_SHA    = "/.punos_sha"
+local LOCAL_VER    = "/.punos_version"
 local LOCAL_KERNEL = "/.punos_kernel"
+
 local kernel = "main"
 if fs.exists(LOCAL_KERNEL) then
-    local kf = fs.open(LOCAL_KERNEL, "r")
-    kernel = kf.readAll():gsub("%s+", "")
-    kf.close()
+    local f = fs.open(LOCAL_KERNEL, "r")
+    kernel = f.readAll():gsub("%s+", "")
+    f.close()
 end
 
--- Validate current kernel against supported list, default to main if unknown
-if kernel ~= "main" and kernel ~= "tardis" and kernel ~= "botto" and kernel ~= "bleeding" then
-    kernel = "main"
+local localSHA = ""
+if fs.exists(LOCAL_SHA) then
+    local f = fs.open(LOCAL_SHA, "r")
+    localSHA = f.readAll():gsub("%s+", "")
+    f.close()
 end
 
--- ---- Constants & Repository Config -----------------------------------------
+local localVer = "?"
+if fs.exists(LOCAL_VER) then
+    local f = fs.open(LOCAL_VER, "r")
+    localVer = f.readAll():gsub("%s+", "")
+    f.close()
+end
 
-local REPO_RAW       = "https://raw.githubusercontent.com/Puntaro-CC/PunOS-CC/"
-local API_BASE       = "https://api.github.com/repos/Puntaro-CC/PunOS-CC/"
-local LOCAL_VER      = "/.punos_version"
-
--- List of all available kernels to display as tabs
 local KERNELS = { "main", "tardis", "botto", "bleeding" }
-
--- ---- Global State Management -----------------------------------------------
-
-local activeTab     = 1  -- Defaults to the first kernel tab ("main")
-local selectedIdx   = nil
-local scrollOff     = 0
-
--- Track selected entries and scrolls separately for each kernel tab
-local kernelStates = {}
-for i, kName in ipairs(KERNELS) do
-    kernelStates[i] = { selectedIdx = 1, scrollOff = 0, entries = {}, filesOk = false, loading = true }
-    -- Automatically set active tab to match the currently running kernel on startup
-    if kName == kernel then
-        activeTab = i
-    end
+local activeTab = 1
+for i, k in ipairs(KERNELS) do
+    if k == kernel then activeTab = i end
 end
 
-local HIST_START    = 4
-local HIST_VIS      = h - HIST_START - 1
+local HIST_START = 4
+local HIST_END   = h - 2
+local HIST_VIS   = HIST_END - HIST_START + 1
 
--- ---- UI Utilities -----------------------------------------------------------
+local states = {}
+for i = 1, #KERNELS do
+    states[i] = { entries = {}, loading = true, error = false, sel = 1, scroll = 0 }
+end
+
+-- ---- Draw ----
 
 local function drawHeader()
     paintutils.drawFilledBox(1, 1, w, 2, UI.border)
     term.setCursorPos(2, 1); term.setTextColor(UI.primary); term.write("PunOS")
-    term.setCursorPos(2, 2); term.setTextColor(UI.subtext);  term.write("Kernel Updates & History")
+    term.setCursorPos(2, 2); term.setTextColor(UI.subtext); term.write("Updater")
+    local info = "v" .. localVer .. "  kernel:" .. kernel
+    term.setCursorPos(w - #info - 1, 2); term.setTextColor(UI.subtext); term.write(info)
 end
 
+local tabBounds = {}
 local function drawTabs()
-    local bounds = {}
-    local currentX = 2
-    local actY = 3
-
-    term.setCursorPos(1, actY)
-    term.setBackgroundColor(UI.background)
-    term.clearLine()
-
-    for i, kName in ipairs(KERNELS) do
-        local label = " " .. kName:upper() .. " "
+    tabBounds = {}
+    paintutils.drawFilledBox(1, 3, w, 3, UI.border)
+    local x = 2
+    for i, k in ipairs(KERNELS) do
+        local lbl = " " .. k:upper() .. " "
         if i == activeTab then
-            term.setBackgroundColor(UI.secondary)
-            term.setTextColor(UI.text)
+            paintutils.drawFilledBox(x, 3, x + #lbl - 1, 3, UI.primary)
+            term.setCursorPos(x, 3); term.setTextColor(UI.background); term.write(lbl)
         else
             term.setBackgroundColor(UI.border)
-            term.setTextColor(UI.subtext)
+            term.setCursorPos(x, 3); term.setTextColor(UI.subtext); term.write(lbl)
         end
-        
-        term.setCursorPos(currentX, actY)
-        term.write(label)
-        
-        bounds[i] = { x1 = currentX, x2 = currentX + #label - 1 }
-        currentX = currentX + #label + 1
+        tabBounds[i] = { x1 = x, x2 = x + #lbl - 1 }
+        x = x + #lbl + 1
     end
-    
-    -- Draw current local kernel status info indicator
-    local statusText = "Kernel: " .. kernel:upper()
-    term.setCursorPos(w - #statusText, actY)
-    term.setBackgroundColor(UI.background)
-    term.setTextColor(UI.primary)
-    term.write(statusText)
-    
-    return bounds
 end
 
-local function wrongKernelDialog(targetKernel)
-    local dw, dh = 30, 6
-    local dx = math.floor((w - dw) / 2) + 1
-    local dy = math.floor((h - dh) / 2) + 1
+local function drawList()
+    term.setBackgroundColor(UI.background)
+    for y = HIST_START, HIST_END do
+        term.setCursorPos(1, y); term.clearLine()
+    end
 
-    paintutils.drawFilledBox(dx, dy, dx + dw - 1, dy + dh - 1, UI.border)
-    paintutils.drawFilledBox(dx + 1, dy + 1, dx + dw - 2, dy + dh - 2, UI.background)
+    local s = states[activeTab]
 
-    term.setTextColor(UI.error)
-    local msg1 = "KERNEL MISMATCH"
-    term.setCursorPos(dx + math.floor((dw - #msg1)/2), dy + 1)
-    term.write(msg1)
+    if s.loading then
+        term.setCursorPos(2, HIST_START); term.setTextColor(UI.subtext)
+        term.write("Fetching history...")
+        return
+    end
+    if s.error then
+        term.setCursorPos(2, HIST_START); term.setTextColor(UI.error)
+        term.write("Network error — check HTTP is enabled.")
+        return
+    end
+    if #s.entries == 0 then
+        term.setCursorPos(2, HIST_START); term.setTextColor(UI.subtext)
+        term.write("No commits found.")
+        return
+    end
 
-    term.setTextColor(UI.text)
-    local msg2 = "Your system is using " .. kernel:upper() .. "."
-    local msg3 = "Cannot safe flash " .. targetKernel:upper() .. "."
-    term.setCursorPos(dx + math.floor((dw - #msg2)/2), dy + 3)
-    term.write(msg2)
-    term.setCursorPos(dx + math.floor((dw - #msg3)/2), dy + 4)
-    term.write(msg3)
+    for i = 1 + s.scroll, math.min(#s.entries, HIST_VIS + s.scroll) do
+        local entry = s.entries[i]
+        local y = HIST_START + (i - 1 - s.scroll)
+        term.setCursorPos(1, y)
+        if i == s.sel then
+            paintutils.drawFilledBox(1, y, w, y, UI.primary)
+            term.setCursorPos(2, y); term.setTextColor(UI.background)
+        else
+            term.setBackgroundColor(UI.background)
+            term.setTextColor(entry.isCurrent and UI.success or UI.text)
+        end
+        local tag = entry.isCurrent and " [installed]" or ""
+        local line = entry.date:sub(1, 10) .. "  " .. entry.msg
+        if #line + #tag > w - 3 then line = line:sub(1, w - #tag - 6) .. "..." end
+        term.setCursorPos(2, y); term.write(line .. tag)
+    end
+    term.setBackgroundColor(UI.background)
+end
 
-    term.setTextColor(UI.subtext)
-    local msg4 = "[Press any key]"
-    term.setCursorPos(dx + math.floor((dw - #msg4)/2), dy + 5)
-    term.write(msg4)
+local function drawFooter()
+    paintutils.drawFilledBox(1, h - 1, w, h - 1, UI.border)
+    term.setCursorPos(2, h - 1); term.setTextColor(UI.subtext)
+    term.write("Up/Down: select  Enter/click: install  Backspace: back")
 
+    paintutils.drawFilledBox(1, h, w, h, UI.border)
+    term.setCursorPos(2, h); term.setTextColor(UI.subtext)
+    term.write("Kernel: " .. kernel:upper())
+
+    local installLbl = " Install "
+    local ix = w - #installLbl
+    paintutils.drawFilledBox(ix, h, w, h, UI.primary)
+    term.setCursorPos(ix, h); term.setTextColor(UI.background); term.write(installLbl)
+end
+
+local function redraw()
+    term.setBackgroundColor(UI.background); term.clear()
+    drawHeader(); drawTabs(); drawList(); drawFooter()
+end
+
+-- ---- Dialogs ----
+
+local function wrongKernelDialog(tk)
+    local msg = "Cannot install " .. tk:upper() .. " while running " .. kernel:upper()
+    local bx = math.floor((w - #msg - 4) / 2)
+    local by = math.floor(h / 2) - 1
+    paintutils.drawFilledBox(bx, by, bx + #msg + 3, by + 2, UI.border)
+    paintutils.drawFilledBox(bx + 1, by + 1, bx + #msg + 2, by + 1, UI.background)
+    term.setCursorPos(bx + 2, by + 1); term.setTextColor(UI.error); term.write(msg)
     os.pullEvent("key")
 end
 
-local function confirmRollback(entry, targetKernel)
-    local dw, dh = 36, 7
-    local dx = math.floor((w - dw) / 2) + 1
-    local dy = math.floor((h - dh) / 2) + 1
-
-    paintutils.drawFilledBox(dx, dy, dx + dw - 1, dy + dh - 1, UI.border)
-    paintutils.drawFilledBox(dx + 1, dy + 1, dx + dw - 2, dy + dh - 2, UI.background)
-
-    term.setTextColor(UI.primary)
-    local title = "CONFIRM SYSTEM FLASH"
-    term.setCursorPos(dx + math.floor((dw - #title)/2), dy + 1)
-    term.write(title)
-
-    term.setTextColor(UI.text)
-    local m1 = "Flash " .. targetKernel:upper() .. " build?"
-    local m2 = "Date: " .. entry.date:sub(1,10)
-    term.setCursorPos(dx + math.floor((dw - #m1)/2), dy + 3)
-    term.write(m1)
-    term.setCursorPos(dx + math.floor((dw - #m2)/2), dy + 4)
-    term.write(m2)
-
-    term.setTextColor(UI.subtext)
-    local m3 = "[Y] Confirm / [N] Cancel"
-    term.setCursorPos(dx + math.floor((dw - #m3)/2), dy + 5)
-    term.write(m3)
-
+local function confirmInstall(entry, tk)
+    local lines = {
+        "Install " .. tk:upper() .. " commit?",
+        entry.date:sub(1, 10) .. ": " .. entry.msg:sub(1, w - 8),
+        "",
+        "Y = confirm   N = cancel",
+    }
+    local bw = w - 8
+    local bx = 4
+    local by = math.floor(h / 2) - 3
+    paintutils.drawFilledBox(bx, by, bx + bw, by + #lines + 1, UI.border)
+    paintutils.drawFilledBox(bx + 1, by + 1, bx + bw - 1, by + #lines, UI.background)
+    for i, l in ipairs(lines) do
+        term.setCursorPos(bx + 2, by + i)
+        term.setTextColor(i == 4 and UI.subtext or UI.text)
+        term.write(l)
+    end
     while true do
-        local _, key = os.pullEvent("key")
-        if key == keys.y then return true
-        elseif key == keys.n then return false end
+        local _, k = os.pullEvent("key")
+        if k == keys.y then return true
+        elseif k == keys.n or k == keys.backspace then return false end
     end
 end
 
-local function drawHistoryTab()
-    term.setBackgroundColor(UI.background)
-    for y = HIST_START, HIST_START + HIST_VIS do
-        term.setCursorPos(1, y)
-        term.clearLine()
-    end
+-- ---- Networking ----
 
-    local state = kernelStates[activeTab]
-    local targetKernel = KERNELS[activeTab]
+local function fetchKernelHistory(idx)
+    local s  = states[idx]
+    local tk = KERNELS[idx]
+    s.loading = true; s.entries = {}
 
-    if state.loading then
-        term.setCursorPos(2, HIST_START)
-        term.setTextColor(UI.subtext)
-        term.write("Fetching target history from repository...")
-        return
-    end
-
-    if not state.filesOk or #state.entries == 0 then
-        term.setCursorPos(2, HIST_START)
-        term.setTextColor(UI.error)
-        term.write("Failed to connect or track remote manifest.")
-        return
-    end
-
-    for i = 1 + state.scrollOff, math.min(#state.entries, HIST_VIS + state.scrollOff + 1) do
-        local entry = state.entries[i]
-        if entry then
-            local y = HIST_START + (i - 1 - state.scrollOff)
-            term.setCursorPos(2, y)
-
-            if i == state.selectedIdx then
-                term.setBackgroundColor(UI.secondary)
-                term.setTextColor(UI.text)
-            else
-                term.setBackgroundColor(UI.background)
-                term.setTextColor(UI.text)
-            end
-
-            local tag = entry.isCurrent and " [Current]" or ""
-            local line = entry.date:sub(1,10) .. " - " .. entry.msg
-            line = line .. string.rep(" ", w - #line - #tag - 2)
-            term.write(line:sub(1, w - #tag - 2) .. tag)
-        end
-    end
-    term.setBackgroundColor(UI.background)
-end
-
--- ---- Networking / Data Acquisition ------------------------------------------
-
-local function fetchKernelHistory(tabIndex)
-    local state = kernelStates[tabIndex]
-    local targetKernel = KERNELS[tabIndex]
-    state.loading = true
-    state.entries = {}
-    
-    local currentSHA = ""
-    if targetKernel == kernel and fs.exists(LOCAL_VER) then
-        local vf = fs.open(LOCAL_VER, "r")
-        currentSHA = vf.readAll():gsub("%s+", "")
-        vf.close()
-    end
-
-    local url = API_BASE .. "commits?path=version.json&per_page=20&sha=" .. targetKernel
+    local url = API_BASE .. "commits?path=version.json&per_page=20&sha=" .. tk
     local res = http.get(url)
-    if not res then
-        state.filesOk = false
-        state.loading = false
-        return
-    end
+    if not res then s.error = true; s.loading = false; return end
 
-    local raw = res.readAll()
-    res.close()
-
-    local commits = textutils.unserialiseJSON(raw)
-    if not commits or type(commits) ~= "table" then
-        state.filesOk = false
-        state.loading = false
-        return
+    local body = res.readAll(); res.close()
+    local ok, commits = pcall(textutils.unserialiseJSON, body)
+    if not ok or type(commits) ~= "table" then
+        s.error = true; s.loading = false; return
     end
 
     for _, c in ipairs(commits) do
-        table.insert(state.entries, {
-            sha       = c.sha,
-            date      = c.commit.committer.date,
-            msg       = c.commit.message:gsub("\n", " "),
-            isCurrent = (c.sha == currentSHA)
-        })
-    end
-
-    state.filesOk = true
-    state.loading = false
-end
-
-local function doUpdate(targetSHA, isRollback, customRawPath)
-    term.setBackgroundColor(colors.black)
-    term.clear()
-    term.setCursorPos(1, 1)
-
-    local targetKernel = KERNELS[activeTab]
-    print(isRollback and "Flashing Kernel Image..." or "Running Incremental Update...")
-    print("Commit SHA: " .. targetSHA)
-
-    local pathPrefix = customRawPath or (REPO_RAW .. targetKernel .. "/")
-    local verUrl = pathPrefix .. "version.json"
-    
-    local vres = http.get(verUrl)
-    if not vres then
-        printError("Failed to fetch remote structural mapping layout.")
-        sleep(2)
-        return
-    end
-    local vraw = vres.readAll()
-    vres.close()
-
-    local manifest = textutils.unserialiseJSON(vraw)
-    if not manifest or not manifest.files then
-        printError("Malformed version configuration manifest.")
-        sleep(2)
-        return
-    end
-
-    -- Process downloads from structural block array
-    for i, fileObj in ipairs(manifest.files) do
-        print("Fetching [" .. i .. "/" .. #manifest.files .. "]: " .. fileObj.path)
-        local fRes = http.get(pathPrefix .. fileObj.path)
-        if fRes then
-            local fData = fRes.readAll()
-            fRes.close()
-            local localPath = fs.combine("/", fileObj.path)
-            local dir = fs.getDir(localPath)
-            if not fs.exists(dir) then fs.makeDir(dir) end
-            local f = fs.open(localPath, "w")
-            f.write(fData)
-            f.close()
-        else
-            printError("Aborted: Network block loss at " .. fileObj.path)
-            sleep(2)
-            return
+        if type(c) == "table" and c.sha and c.commit then
+            local date = ""
+            if c.commit.committer then date = c.commit.committer.date or ""
+            elseif c.commit.author then date = c.commit.author.date or "" end
+            local msg = (c.commit.message or ""):match("^([^\n]+)") or ""
+            table.insert(s.entries, {
+                sha       = c.sha,
+                date      = date,
+                msg       = msg,
+                isCurrent = (c.sha == localSHA),
+            })
         end
     end
 
-    -- Write localized verification tokens onto disk configuration layers
-    local vf = fs.open(LOCAL_VER, "w")
-    vf.write(targetSHA)
-    vf.close()
+    s.loading = false
+end
 
-    local kf = fs.open(LOCAL_KERNEL, "w")
-    kf.write(targetKernel)
-    kf.close()
+local function doUpdate(entry, targetKernel)
+    term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
+    term.setTextColor(UI.primary)
+    print("Installing " .. targetKernel .. " @ " .. entry.sha:sub(1, 8) .. "...")
+    term.setTextColor(UI.subtext)
+    print("Fetching file list...")
 
-    print("\nUpdate completed successfully. Rebooting system context...")
-    sleep(1.5)
+    local rawBase = REPO_RAW .. entry.sha .. "/"
+
+    local res = http.get(rawBase .. "files.json")
+    if not res then
+        term.setTextColor(UI.error); print("Failed to fetch files.json"); sleep(2); return
+    end
+    local filesBody = res.readAll(); res.close()
+
+    -- Parse key-value format: "repoPath": "localPath"
+    local files = {}
+    for repoPath, localPath in filesBody:gmatch('"([^"]+)"%s*:%s*"([^"]+)"') do
+        if repoPath ~= "files" then
+            table.insert(files, { repoPath, localPath })
+        end
+    end
+
+    if #files == 0 then
+        term.setTextColor(UI.error); print("files.json empty or malformed"); sleep(2); return
+    end
+
+    local barW = w - 4; local barX = 3; local barY = 5
+    paintutils.drawFilledBox(barX, barY, barX + barW - 1, barY, UI.border)
+
+    for i, pair in ipairs(files) do
+        local repoPath, localPath = pair[1], pair[2]
+
+        term.setCursorPos(2, 7); term.setBackgroundColor(colors.black)
+        term.setTextColor(UI.subtext); term.clearLine(); term.write(repoPath)
+
+        local isBin = localPath:sub(-6) == ".dfpwm"
+        local fRes = http.get(rawBase .. repoPath, nil, isBin)
+        if fRes then
+            local data = fRes.readAll(); fRes.close()
+            local dir = fs.getDir(localPath)
+            if dir ~= "" and not fs.exists(dir) then fs.makeDir(dir) end
+            local f = fs.open(localPath, isBin and "wb" or "w")
+            if f then f.write(data); f.close() end
+        end
+
+        local filled = math.floor(barW * i / #files)
+        if filled > 0 then
+            paintutils.drawFilledBox(barX, barY, barX + filled - 1, barY, UI.primary)
+        end
+        local pct = math.floor(100 * i / #files) .. "%"
+        term.setCursorPos(math.floor((w - #pct) / 2), barY - 1)
+        term.setBackgroundColor(colors.black); term.setTextColor(UI.primary); term.write(pct)
+    end
+
+    -- Fetch version string from version.json
+    local vRes = http.get(rawBase .. "version.json")
+    local vStr = "?"
+    if vRes then
+        local vBody = vRes.readAll(); vRes.close()
+        vStr = vBody:match('"version"%s*:%s*"([^"]*)"') or "?"
+    end
+
+    local function writeFile(path, content)
+        local f = fs.open(path, "w"); f.write(content); f.close()
+    end
+    writeFile(LOCAL_SHA, entry.sha)
+    writeFile(LOCAL_VER, vStr)
+    writeFile(LOCAL_KERNEL, targetKernel)
+
+    term.setCursorPos(2, 9); term.setTextColor(UI.success); term.write("Done! v" .. vStr)
+    for i = 3, 1, -1 do
+        term.setCursorPos(2, h); term.setBackgroundColor(colors.black); term.clearLine()
+        term.setTextColor(UI.subtext); term.write("Rebooting in " .. i .. "...")
+        sleep(1)
+    end
     os.reboot()
 end
 
--- ---- Main Logic Execution Loop ----------------------------------------------
+-- ---- Main ----
 
-term.setBackgroundColor(UI.background)
-term.clear()
-drawHeader()
-local tabBounds = drawTabs()
-drawHistoryTab()
+term.setBackgroundColor(UI.background); term.clear()
+drawHeader(); drawTabs(); drawList(); drawFooter()
 
--- Threaded history population wrapper across available target vectors
+-- Fetch all kernel histories in parallel
 parallel.waitForAll(
     function() fetchKernelHistory(1) end,
     function() fetchKernelHistory(2) end,
@@ -326,92 +302,73 @@ parallel.waitForAll(
     function() fetchKernelHistory(4) end
 )
 
-drawHistoryTab()
+redraw()
 
 while true do
     local e, p1, p2, p3 = os.pullEvent()
-    local state = kernelStates[activeTab]
-    local targetKernel = KERNELS[activeTab]
+    local s  = states[activeTab]
+    local tk = KERNELS[activeTab]
 
-    if e == "mouse_click" and p1 == 1 then
-        local mx, my = p2, p3
-        if my == 3 then
-            for i, bound in ipairs(tabBounds) do
-                if mx >= bound.x1 and mx <= bound.x2 and i ~= activeTab then
-                    activeTab = i
-                    tabBounds = drawTabs()
-                    drawHistoryTab()
-                    break
+    if e == "key" then
+        if p1 == keys.backspace then
+            break
+        elseif not s.loading and not s.error then
+            if p1 == keys.up and s.sel > 1 then
+                s.sel = s.sel - 1
+                if s.sel - 1 < s.scroll then s.scroll = s.sel - 1 end
+                drawList()
+            elseif p1 == keys.down and s.sel < #s.entries then
+                s.sel = s.sel + 1
+                if s.sel - 1 >= s.scroll + HIST_VIS then s.scroll = s.sel - HIST_VIS end
+                drawList()
+            elseif p1 == keys.enter and #s.entries > 0 then
+                local entry = s.entries[s.sel]
+                if tk ~= kernel then
+                    wrongKernelDialog(tk); redraw()
+                elseif entry then
+                    if confirmInstall(entry, tk) then doUpdate(entry, tk) end
+                    redraw()
                 end
-            end
-        elseif my >= HIST_START and my <= HIST_START + HIST_VIS and state.filesOk and not state.loading then
-            local clickedIdx = my - HIST_START + 1 + state.scrollOff
-            if clickedIdx <= #state.entries then
-                state.selectedIdx = clickedIdx
-                drawHistoryTab()
             end
         end
 
     elseif e == "mouse_scroll" then
-        if state.filesOk and not state.loading then
-            if p1 == 1 and state.scrollOff + HIST_VIS < #state.entries then
-                state.scrollOff = state.scrollOff + 1
-                drawHistoryTab()
-            elseif p1 == -1 and state.scrollOff > 0 then
-                state.scrollOff = state.scrollOff - 1
-                drawHistoryTab()
+        if not s.loading and not s.error then
+            if p1 == 1 and s.scroll + HIST_VIS < #s.entries then
+                s.scroll = s.scroll + 1; drawList()
+            elseif p1 == -1 and s.scroll > 0 then
+                s.scroll = s.scroll - 1; drawList()
             end
         end
 
-    elseif e == "key" then
-        if p1 == keys.q then
-            break
-        elseif state.filesOk and not state.loading then
-            if p1 == keys.up then
-                if state.selectedIdx > 1 then
-                    state.selectedIdx = state.selectedIdx - 1
-                    if state.selectedIdx - 1 < state.scrollOff then
-                        state.scrollOff = state.selectedIdx - 1
-                    end
-                    drawHistoryTab()
+    elseif e == "mouse_click" then
+        local mx, my = p2, p3
+        if my == 3 then
+            for i, b in ipairs(tabBounds) do
+                if mx >= b.x1 and mx <= b.x2 and i ~= activeTab then
+                    activeTab = i; drawTabs(); drawList(); break
                 end
-            elseif p1 == keys.down then
-                if state.selectedIdx < #state.entries then
-                    state.selectedIdx = state.selectedIdx + 1
-                    if state.selectedIdx - 1 >= state.scrollOff + HIST_VIS then
-                        state.scrollOff = state.selectedIdx - HIST_VIS
-                    end
-                    drawHistoryTab()
-                end
-            elseif p1 == keys.enter then
-                -- Guard rails check: enforce flash confirmation checks across partitions
-                if targetKernel ~= kernel then
-                    wrongKernelDialog(targetKernel)
-                    term.setBackgroundColor(UI.background)
-                    term.clear()
-                    drawHeader()
-                    tabBounds = drawTabs()
-                    drawHistoryTab()
-                elseif state.selectedIdx and state.filesOk then
-                    local entry = state.entries[state.selectedIdx]
-                    if entry then
-                        if confirmRollback(entry, targetKernel) then
-                            doUpdate(entry.sha, true, REPO_RAW .. entry.sha .. "/")
-                            return
-                        end
-                        term.setBackgroundColor(UI.background)
-                        term.clear()
-                        drawHeader()
-                        tabBounds = drawTabs()
-                        drawHistoryTab()
-                    end
+            end
+        elseif my >= HIST_START and my <= HIST_END and not s.loading and not s.error then
+            local idx = my - HIST_START + 1 + s.scroll
+            if idx >= 1 and idx <= #s.entries then
+                s.sel = idx; drawList()
+            end
+        elseif my == h then
+            local installLbl = " Install "
+            local ix = w - #installLbl
+            if mx >= ix and not s.loading and not s.error and #s.entries > 0 then
+                local entry = s.entries[s.sel]
+                if tk ~= kernel then
+                    wrongKernelDialog(tk); redraw()
+                elseif entry then
+                    if confirmInstall(entry, tk) then doUpdate(entry, tk) end
+                    redraw()
                 end
             end
         end
     end
 end
 
-term.setBackgroundColor(colors.black)
-term.clear()
-term.setCursorPos(1, 1)
+term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
 shell.run(".menu")
