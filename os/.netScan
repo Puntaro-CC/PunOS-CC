@@ -21,37 +21,31 @@ end
 
 rednet.open(peripheral.getName(modem))
 
--- Original design: Servers register under standard protocols but use custom naming conventions.
--- rednet.lookup returns all hosts on a protocol as a table when no name given.
-
 local results     = {}
 local scanning    = false
 local selectedIdx = 1
 local scrollOff   = 0
 
-local LIST_START  = 4
-local listHeight  = h - LIST_START - 2
+local LIST_START = 4
+local listHeight = h - LIST_START - 2
 
-local scanBtn = { x1 = 2,     y1 = h, x2 = 10, label = "[ Scan ]" }
-local backBtn = { x1 = w - 9, y1 = h, x2 = w,  label = "[ Back ]" }
+local scanBtn = { x1 = 2,     x2 = 10, y = h, label = "[ Scan ]" }
+local backBtn = { x1 = w - 8, x2 = w,  y = h, label = "[ Back ]" }
 
 local function drawHeader()
-    term.setBackgroundColor(UI.border)
-    term.clear()
     paintutils.drawFilledBox(1, 1, w, 2, UI.border)
     term.setCursorPos(2, 1); term.setTextColor(UI.primary); term.write("PunOS")
     term.setCursorPos(2, 2); term.setTextColor(UI.subtext);  term.write("Network Scanner")
+    local info = "ID:" .. os.getComputerID()
+    term.setCursorPos(w - #info - 1, 2); term.write(info)
 end
 
 local function drawFooter()
-    term.setBackgroundColor(UI.border)
     paintutils.drawFilledBox(1, h, w, h, UI.border)
-    
-    term.setCursorPos(scanBtn.x1, scanBtn.y1)
+    term.setCursorPos(scanBtn.x1, h)
     term.setTextColor(scanning and UI.subtext or UI.primary)
     term.write(scanBtn.label)
-
-    term.setCursorPos(backBtn.x1, backBtn.y1)
+    term.setCursorPos(backBtn.x1, h)
     term.setTextColor(UI.error)
     term.write(backBtn.label)
 end
@@ -59,13 +53,11 @@ end
 local function drawList()
     term.setBackgroundColor(UI.background)
     for y = LIST_START, LIST_START + listHeight do
-        term.setCursorPos(1, y)
-        term.clearLine()
+        term.setCursorPos(1, y); term.clearLine()
     end
 
     if #results == 0 then
-        term.setCursorPos(2, LIST_START)
-        term.setTextColor(UI.subtext)
+        term.setCursorPos(2, LIST_START); term.setTextColor(UI.subtext)
         term.write(scanning and "Scanning network..." or "No active servers found.")
         return
     end
@@ -74,20 +66,16 @@ local function drawList()
         local r = results[i]
         if r then
             local y = LIST_START + (i - 1 - scrollOff)
-            term.setCursorPos(2, y)
-            
             if i == selectedIdx then
-                term.setBackgroundColor(UI.secondary)
-                term.setTextColor(UI.text)
+                paintutils.drawFilledBox(1, y, w, y, UI.primary)
+                term.setCursorPos(2, y); term.setTextColor(UI.background)
             else
-                term.setBackgroundColor(UI.background)
-                term.setTextColor(UI.text)
+                term.setCursorPos(2, y); term.setTextColor(UI.text)
             end
-
             local label = (r.label and r.label ~= "") and (" (" .. r.label .. ")") or ""
-            local line  = "ID: " .. tostring(r.id) .. "  " .. r.service .. label
-            line = line .. string.rep(" ", w - #line - 2)
-            term.write(line:sub(1, w - 2))
+            local line  = "ID:" .. tostring(r.id) .. "  " .. r.service .. label
+            if #line > w - 2 then line = line:sub(1, w - 2) end
+            term.write(line)
         end
     end
     term.setBackgroundColor(UI.background)
@@ -95,64 +83,54 @@ end
 
 local function drawActions()
     local actY = h - 1
-    term.setCursorPos(1, actY)
-    term.setBackgroundColor(UI.background)
-    term.clearLine()
-
-    local r = results[selectedIdx]
-    if r and #results > 0 then
-        term.setCursorPos(2, actY)
-        term.setTextColor(UI.primary)
-        term.write("Press ENTER to connect")
+    term.setCursorPos(1, actY); term.setBackgroundColor(UI.background); term.clearLine()
+    if #results > 0 and results[selectedIdx] then
+        term.setCursorPos(2, actY); term.setTextColor(UI.primary)
+        term.write("Enter: connect to selected server")
     end
 end
 
 local function doScan()
-    scanning = true
-    results  = {}
-    selectedIdx = 1
-    scrollOff = 0
-    drawList()
-    drawActions()
+    scanning = true; results = {}; selectedIdx = 1; scrollOff = 0
+    drawList(); drawActions()
 
     local seen = {}
-    
-    -- Original design lookup patterns
     local lookups = {
-        { proto = "nfp_share", label = "fileshare" },
-        { proto = "chat",      label = "chat" }
+        { proto = "nfp_share", label = "File Share" },
+        { proto = "chat",      label = "Chat" },
     }
 
     for _, entry in ipairs(lookups) do
-        -- Fix: CC returns a table array of host IDs when no hostname is passed to rednet.lookup
         local ids = rednet.lookup(entry.proto)
         if ids then
-            if type(ids) ~= "table" then ids = {ids} end -- Safe fallback if single ID returned
-            
+            if type(ids) ~= "table" then ids = { ids } end
             for _, id in ipairs(ids) do
                 if id ~= os.getComputerID() and not seen[id] then
                     seen[id] = true
-                    
-                    -- To respect your original configuration where servers register unique hostnames,
-                    -- we can add them to our visible result list.
-                    table.insert(results, {
-                        id      = id,
-                        label   = "", 
-                        service = entry.label
-                    })
+                    table.insert(results, { id = id, label = "", service = entry.label, proto = entry.proto })
                 end
             end
         end
     end
 
-    scanning = false
-    drawList()
-    drawActions()
+    scanning = false; drawList(); drawActions()
+end
+
+local function connectTo(r)
+    rednet.close(peripheral.getName(modem))
+    term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
+    if r.proto == "nfp_share" then
+        shell.run("os/.fileShare")
+    elseif r.proto == "chat" then
+        -- Strip the "chat_" prefix to get the hostname
+        local hostname = r.label ~= "" and r.label or tostring(r.id)
+        shell.run("/publicChat.lua", "join", hostname, os.computerLabel() or ("User" .. os.getComputerID()))
+    end
 end
 
 local function uiLoop()
-    drawHeader()
-    drawFooter()
+    term.setBackgroundColor(UI.background); term.clear()
+    drawHeader(); drawFooter()
     doScan()
 
     while true do
@@ -167,33 +145,30 @@ local function uiLoop()
                 selectedIdx = selectedIdx + 1
                 if selectedIdx - 1 >= scrollOff + listHeight then scrollOff = scrollOff + 1 end
                 drawList(); drawActions()
-            elseif p1 == keys.enter and #results > 0 then
-                local r = results[selectedIdx]
-                if r then
-                    term.setBackgroundColor(colors.black)
-                    term.clear()
-                    term.setCursorPos(1, 1)
-                    if r.service == "fileshare" then
-                        shell.run("os/programs/shareClient.lua", tostring(r.id))
-                    elseif r.service == "chat" then
-                        -- Connects via original parameters
-                        shell.run("os/programs/publicChat.lua", "join", "Server", "User" .. os.getComputerID())
-                    end
-                    break
-                end
+            elseif p1 == keys.enter and #results > 0 and results[selectedIdx] then
+                connectTo(results[selectedIdx]); return
+            elseif p1 == keys.backspace then
+                break
             end
 
-        elseif e == "mouse_click" and p1 == 1 then
+        elseif e == "mouse_click" then
             local mx, my = p2, p3
-            if mx >= scanBtn.x1 and mx <= scanBtn.x2 and my == scanBtn.y1 then
-                doScan()
-            elseif mx >= backBtn.x1 and mx <= backBtn.x2 and my == backBtn.y1 then
-                break
+            if my == h then
+                if mx >= scanBtn.x1 and mx <= scanBtn.x2 then
+                    doScan()
+                elseif mx >= backBtn.x1 and mx <= backBtn.x2 then
+                    break
+                end
             else
-                for i = 1 + scrollOff, math.min(#results, listHeight + scrollOff) do
+                for i = 1 + scrollOff, math.min(#results, listHeight + scrollOff + 1) do
                     local y = LIST_START + (i - 1 - scrollOff)
                     if my == y then
-                        selectedIdx = i; drawList(); drawActions(); break
+                        if selectedIdx == i and results[i] then
+                            connectTo(results[i]); return
+                        else
+                            selectedIdx = i; drawList(); drawActions()
+                        end
+                        break
                     end
                 end
             end
@@ -208,7 +183,7 @@ local function uiLoop()
     end
 end
 
--- Original background listener loop
+-- Background listener so this computer responds to scans from others
 local function listenLoop()
     while true do
         local senderId, msg = rednet.receive("punos_scan")
@@ -225,7 +200,5 @@ end
 parallel.waitForAny(uiLoop, listenLoop)
 
 rednet.close(peripheral.getName(modem))
-term.setBackgroundColor(colors.black)
-term.clear()
-term.setCursorPos(1,1)
+term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
 shell.run("os/.programs")
