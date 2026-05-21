@@ -2,7 +2,6 @@ os.pullEvent = os.pullEventRaw
 term.setTextColor(colors.orange)
 
 local w, h = term.getSize()
-
 local UI = dofile("/os/loadTheme.lua")
 
 function printCentered(y, s, color)
@@ -15,12 +14,8 @@ end
 
 local function drawHeader()
     paintutils.drawFilledBox(1, 1, w, 2, UI.border)
-    term.setCursorPos(2, 1)
-    term.setTextColor(UI.primary)
-    term.write("PunOS")
-    term.setCursorPos(2, 2)
-    term.setTextColor(UI.subtext)
-    term.write("Programs")
+    term.setCursorPos(2, 1); term.setTextColor(UI.primary); term.write("PunOS")
+    term.setCursorPos(2, 2); term.setTextColor(UI.subtext); term.write("Programs")
 end
 
 local programs = {
@@ -31,13 +26,14 @@ local programs = {
     {name = "Music",         icon = "~)", desc = "Stream music"},
     {name = "Audio Player",  icon = ">>", desc = "Play local audio"},
     {name = "File Share",    icon = "<>", desc = "Network files"},
+    {name = "Net Scanner",   icon = "@@", desc = "Scan network"},
     {name = "File Manager",  icon = "FM", desc = "Rename/delete files"},
     {name = "Calculator",    icon = "+-", desc = "Calc + calculus"},
     {name = "CCDoom",        icon = ">!", desc = "3D shooter"},
     {name = "Disk Browser",  icon = "[]", desc = "Browse disk drives"},
     {name = "Settings",      icon = "* ", desc = "Themes & config"},
-    {name = "Updater",       icon = "^^ ", desc = "Check for updates"},
-    {name = "Back",          icon = "<<", desc = "Return to menu"}
+    {name = "Updater",       icon = "^^", desc = "Check for updates"},
+    {name = "Back",          icon = "<<", desc = "Return to menu"},
 }
 
 local nOption = 1
@@ -48,25 +44,23 @@ local function drawMenu()
     term.clear()
     drawHeader()
 
-    local cols = 2
-    local boxWidth = math.floor((w - 4) / cols) - 1
+    local cols      = 2
+    local boxWidth  = math.floor((w - 4) / cols) - 1
     local boxHeight = 2
-    local startY = 4
-    local startX = 2
-    local spacing = 0
+    local startY    = 4
+    local startX    = 2
 
     buttonRegions = {}
 
     for i, program in ipairs(programs) do
         local col = (i - 1) % cols
         local row = math.floor((i - 1) / cols)
-
-        local x = startX + col * (boxWidth + 2)
-        local y = startY + row * (boxHeight + spacing)
+        local x   = startX + col * (boxWidth + 2)
+        local y   = startY + row * boxHeight
 
         if y + boxHeight > h - 1 then break end
 
-        buttonRegions[i] = {x1 = x, y1 = y, x2 = x + boxWidth - 1, y2 = y + boxHeight - 1}
+        buttonRegions[i] = { x1 = x, y1 = y, x2 = x + boxWidth - 1, y2 = y + boxHeight - 1 }
 
         if i == nOption then
             paintutils.drawFilledBox(x, y, x + boxWidth - 1, y + boxHeight - 1, UI.primary)
@@ -78,19 +72,15 @@ local function drawMenu()
 
         term.setCursorPos(x + 1, y)
         term.write(program.icon .. " " .. program.name)
-
         term.setTextColor(UI.subtext)
         term.setCursorPos(x + 1, y + 1)
         local desc = program.desc
-        if #desc > boxWidth - 2 then
-            desc = string.sub(desc, 1, boxWidth - 5) .. "..."
-        end
+        if #desc > boxWidth - 2 then desc = desc:sub(1, boxWidth - 5) .. "..." end
         term.write(desc)
     end
 
     paintutils.drawFilledBox(1, h, w, h, UI.background)
-    term.setCursorPos(2, h)
-    term.setTextColor(UI.subtext)
+    term.setCursorPos(2, h); term.setTextColor(UI.subtext)
     term.write("WASD or Click: Select | Enter: Open")
 end
 
@@ -101,87 +91,52 @@ while true do
 
     if e == "key" then
         if p == keys.w or p == keys.up then
-            if nOption > 2 then
-                nOption = nOption - 2
-                drawMenu()
-            elseif nOption == 2 then
-                nOption = 1
-                drawMenu()
-            end
-
+            if nOption > 2 then nOption = nOption - 2
+            elseif nOption == 2 then nOption = 1 end
+            drawMenu()
         elseif p == keys.s or p == keys.down then
             if nOption <= #programs - 2 then
                 nOption = nOption + 2
                 if nOption > #programs then nOption = #programs end
-                drawMenu()
             elseif nOption == #programs - 1 then
                 nOption = #programs
-                drawMenu()
             end
-
+            drawMenu()
         elseif p == keys.a or p == keys.left then
-            if nOption > 1 then
-                nOption = nOption - 1
-                drawMenu()
-            end
-
+            if nOption > 1 then nOption = nOption - 1; drawMenu() end
         elseif p == keys.d or p == keys.right then
-            if nOption < #programs then
-                nOption = nOption + 1
-                drawMenu()
-            end
-
+            if nOption < #programs then nOption = nOption + 1; drawMenu() end
         elseif p == keys.enter then
             break
         end
 
     elseif e == "mouse_click" then
         local mx, my = p2, p3
-        local clicked = false
         for i, r in ipairs(buttonRegions) do
             if mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2 then
-                nOption = i
-                clicked = true
-                break
+                nOption = i; drawMenu(); sleep(0.08); break
             end
         end
-        if clicked then
-            drawMenu()
-            sleep(0.08)
-            break
-        end
+        break
     end
 end
 
 term.setBackgroundColor(colors.black)
 term.clear()
 
-if nOption == 1 then
-    shell.run("/publicChat.lua", "join", "general", os.computerLabel())
-elseif nOption == 2 then
-    shell.run("os/.ChatApp")
-elseif nOption == 3 then
-    shell.run("os/.tetris")
-elseif nOption == 4 then
-    shell.run("os/.choosePaint")
-elseif nOption == 5 then
-    shell.run("os/.music")
-elseif nOption == 6 then
-    shell.run("os/.audioPlayer")
-elseif nOption == 7 then
-    shell.run("os/.fileShare")
-elseif nOption == 8 then
-    shell.run("os/.fileManager")
-elseif nOption == 9 then
-    shell.run("os/.calculator")
-elseif nOption == 10 then
-    shell.run("os/.doom")
-elseif nOption == 11 then
-    shell.run("os/.diskBrowser")
-elseif nOption == 12 then
-    shell.run("os/.settings")
-elseif nOption == 13 then
-    shell.run("os/.updater")
-elseif nOption == 14 then
-    shell.run(".menu")
+if     nOption == 1  then shell.run("/publicChat.lua", "join", "general", os.computerLabel() or ("User"..os.getComputerID()))
+elseif nOption == 2  then shell.run("os/.ChatApp")
+elseif nOption == 3  then shell.run("os/.tetris")
+elseif nOption == 4  then shell.run("os/.choosePaint")
+elseif nOption == 5  then shell.run("os/.music")
+elseif nOption == 6  then shell.run("os/.audioPlayer")
+elseif nOption == 7  then shell.run("os/.fileShare")
+elseif nOption == 8  then shell.run("os/.netScan")
+elseif nOption == 9  then shell.run("os/.fileManager")
+elseif nOption == 10 then shell.run("os/.calculator")
+elseif nOption == 11 then shell.run("os/.doom")
+elseif nOption == 12 then shell.run("os/.diskBrowser")
+elseif nOption == 13 then shell.run("os/.settings")
+elseif nOption == 14 then shell.run("os/.updater")
+elseif nOption == 15 then shell.run(".menu")
 end
