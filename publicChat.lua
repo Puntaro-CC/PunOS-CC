@@ -6,10 +6,10 @@ local UI = dofile("/os/loadTheme.lua")
 UI.system = UI.secondary
 
 local function printUsage()
-    local programName = arg[0] or fs.getName(shell.getRunningProgram())
+    local p = arg[0] or fs.getName(shell.getRunningProgram())
     print("Usages:")
-    print(programName .. " host <hostname>")
-    print(programName .. " join <hostname> <nickname>")
+    print(p .. " host <channel>")
+    print(p .. " join [channel] [nickname]")
 end
 
 local sOpenedModem = nil
@@ -17,157 +17,141 @@ local function openModem()
     for _, sModem in ipairs(peripheral.getNames()) do
         if peripheral.getType(sModem) == "modem" then
             if not rednet.isOpen(sModem) then
-                rednet.open(sModem)
-                sOpenedModem = sModem
+                rednet.open(sModem); sOpenedModem = sModem
             end
             return true
         end
     end
-    print("No modems found.")
-    return false
+    print("No modems found."); return false
 end
 
 local function closeModem()
-    if sOpenedModem ~= nil then
-        rednet.close(sOpenedModem)
-        sOpenedModem = nil
-    end
+    if sOpenedModem then rednet.close(sOpenedModem); sOpenedModem = nil end
 end
 
 local highlightColour, textColour
 if term.isColour() then
-    textColour      = UI.text
-    highlightColour = UI.primary
+    textColour = UI.text; highlightColour = UI.primary
 else
-    textColour      = colours.white
-    highlightColour = colours.white
+    textColour = colours.white; highlightColour = colours.white
 end
 
+local w, h = term.getSize()
+local MAX_HISTORY = 30
 local sCommand = tArgs[1]
 
+-- ================================================================
+-- HOST MODE
+-- ================================================================
 if sCommand == "host" then
     local sHostname = tArgs[2]
-    if sHostname == nil then printUsage(); return end
+    if not sHostname then printUsage(); return end
     if not openModem() then return end
 
-    -- "chat_" prefix prevents collision with other CC programs using "chat" protocol
     rednet.host("chat", "chat_" .. sHostname)
 
-    local monitor = peripheral.find("monitor")
-    local parentTerm
-    if monitor then
-        parentTerm = monitor
-        monitor.setTextScale(0.5)
-    else
-        parentTerm = term.current()
+    local HISTORY_FILE = "/.pubchat_" .. sHostname .. ".log"
+    local messageLog   = {}
+
+    if fs.exists(HISTORY_FILE) then
+        local f = fs.open(HISTORY_FILE, "r")
+        local line = f.readLine()
+        while line do table.insert(messageLog, line); line = f.readLine() end
+        f.close()
+        while #messageLog > MAX_HISTORY do table.remove(messageLog, 1) end
     end
 
-    local w, h = parentTerm.getSize()
-    local headerWindow  = window.create(parentTerm, 1, 1, w, 3, true)
-    local historyWindow = window.create(parentTerm, 1, 4, w, h - 4, true)
-    local statusWindow  = window.create(parentTerm, 1, h, w, 1, true)
+    local function appendHistory(msg)
+        table.insert(messageLog, msg)
+        while #messageLog > MAX_HISTORY do table.remove(messageLog, 1) end
+        local f = fs.open(HISTORY_FILE, "w")
+        for _, line in ipairs(messageLog) do f.writeLine(line) end
+        f.close()
+    end
 
-    local messageHistory = {}
-    local scrollPosition = 0
-    local maxHistoryLines = 1000
+    local monitor = peripheral.find("monitor")
+    local parentTerm = monitor or term.current()
+    if monitor then monitor.setTextScale(0.5) end
+
+    local W, H = parentTerm.getSize()
+    local headerWindow  = window.create(parentTerm, 1, 1, W, 3, true)
+    local historyWindow = window.create(parentTerm, 1, 4, W, H - 4, true)
+    local statusWindow  = window.create(parentTerm, 1, H, W, 1, true)
+
+    local dispHistory = {}
+    local scrollPos   = 0
+    local tUsers      = {}
+    local nUsers      = 0
 
     parentTerm.setBackgroundColor(UI.background)
     parentTerm.clear()
     term.redirect(parentTerm)
 
     local function drawServerHeader()
-        headerWindow.setBackgroundColor(UI.border)
-        headerWindow.clear()
-        headerWindow.setCursorPos(2, 2)
-        headerWindow.setTextColor(UI.primary)
-        headerWindow.write("PublicChat Server")
-        headerWindow.setCursorPos(w - 8, 2)
-        headerWindow.setTextColor(UI.system)
+        headerWindow.setBackgroundColor(UI.border); headerWindow.clear()
+        headerWindow.setCursorPos(2, 2); headerWindow.setTextColor(UI.primary)
+        headerWindow.write("PublicChat  #" .. sHostname)
+        headerWindow.setCursorPos(W - 8, 2); headerWindow.setTextColor(UI.system)
         headerWindow.write("[SERVER]")
-        headerWindow.setCursorPos(2, 3)
-        headerWindow.setTextColor(UI.subtext)
-        headerWindow.write("Hosting: #" .. sHostname)
-        local idInfo = "ID:" .. os.getComputerID()
-        headerWindow.setCursorPos(w - #idInfo - 1, 3)
-        headerWindow.write(idInfo)
+        local id = "ID:" .. os.getComputerID()
+        headerWindow.setCursorPos(W - #id - 1, 3)
+        headerWindow.setTextColor(UI.subtext); headerWindow.write(id)
     end
 
-    local function drawStatusBar(nUsers, tUsers)
-        statusWindow.setBackgroundColor(UI.border)
-        statusWindow.clear()
-        statusWindow.setCursorPos(2, 1)
-        statusWindow.setTextColor(UI.subtext)
-        local statusText = nUsers .. " user" .. (nUsers == 1 and "" or "s")
+    local function drawStatusBar()
+        statusWindow.setBackgroundColor(UI.border); statusWindow.clear()
+        statusWindow.setCursorPos(2, 1); statusWindow.setTextColor(UI.subtext)
+        local s = nUsers .. " online"
         if nUsers > 0 then
-            statusText = statusText .. ": "
-            local names = {}
-            for _, u in pairs(tUsers) do table.insert(names, u.sUsername) end
-            statusText = statusText .. table.concat(names, ", ")
+            s = s .. ":"
+            for _, u in pairs(tUsers) do s = s .. " " .. u.sUsername end
         end
-        if scrollPosition > 0 then statusText = statusText .. " | Scrolled" end
-        if #statusText > w - 4 then statusText = statusText:sub(1, w - 7) .. "..." end
-        statusWindow.write(statusText)
+        if #s > W - 3 then s = s:sub(1, W - 6) .. "..." end
+        statusWindow.write(s)
     end
 
-    local function redrawHistory(nUsers, tUsers)
-        historyWindow.setBackgroundColor(UI.background)
-        historyWindow.clear()
-        historyWindow.setCursorPos(1, 1)
+    local function redrawHistoryWindow()
+        historyWindow.setBackgroundColor(UI.background); historyWindow.clear()
         local _, maxY = historyWindow.getSize()
-        local startLine = math.max(1, #messageHistory - maxY + 1 - scrollPosition)
-        local endLine   = math.min(#messageHistory, startLine + maxY - 1)
-        for i = startLine, endLine do
-            local msg = messageHistory[i]
+        local start = math.max(1, #dispHistory - maxY + 1 - scrollPos)
+        local stop  = math.min(#dispHistory, start + maxY - 1)
+        local y = 1
+        for i = start, stop do
+            local msg = dispHistory[i]
             if msg then
-                if string.match(msg, "^%*") then
-                    historyWindow.setTextColour(UI.system)
-                    historyWindow.write(msg)
+                historyWindow.setCursorPos(1, y)
+                if msg:match("^%*") then
+                    historyWindow.setTextColour(UI.system); historyWindow.write(msg)
                 else
-                    local sUsernameBit = string.match(msg, "^<[^>]*>")
-                    if sUsernameBit then
-                        historyWindow.setTextColour(highlightColour)
-                        historyWindow.write(sUsernameBit)
-                        historyWindow.setTextColour(UI.text)
-                        historyWindow.write(string.sub(msg, #sUsernameBit + 1))
+                    local u = msg:match("^<[^>]*>")
+                    if u then
+                        historyWindow.setTextColour(highlightColour); historyWindow.write(u)
+                        historyWindow.setTextColour(UI.text); historyWindow.write(msg:sub(#u + 1))
                     else
-                        historyWindow.setTextColour(UI.text)
-                        historyWindow.write(msg)
+                        historyWindow.setTextColour(UI.text); historyWindow.write(msg)
                     end
                 end
-                if i < endLine then
-                    local _, y = historyWindow.getCursorPos()
-                    historyWindow.setCursorPos(1, y + 1)
-                end
+                y = y + 1
             end
         end
-        drawStatusBar(nUsers, tUsers)
+        drawStatusBar()
     end
 
-    local function printServerMessage(sMessage, nUsers, tUsers)
-        table.insert(messageHistory, sMessage)
-        if #messageHistory > maxHistoryLines then
-            table.remove(messageHistory, 1)
-            if scrollPosition > 0 then scrollPosition = scrollPosition - 1 end
+    local function addToDisplay(msg)
+        table.insert(dispHistory, msg)
+        if #dispHistory > 1000 then table.remove(dispHistory, 1) end
+        if scrollPos == 0 then redrawHistoryWindow() end
+    end
+
+    local function send(sText)
+        for nUID, tUser in pairs(tUsers) do
+            rednet.send(tUser.nID, { sType = "text", nUserID = nUID, sText = sText }, "chat")
         end
-        if scrollPosition == 0 then redrawHistory(nUsers, tUsers) end
     end
 
-    drawServerHeader()
-
-    local tUsers = {}
-    local nUsers = 0
-
-    printServerMessage("* Server started on #" .. sHostname, nUsers, tUsers)
-    drawStatusBar(nUsers, tUsers)
-
-    local function send(sText, nUserID)
-        if nUserID then
-            local tUser = tUsers[nUserID]
-            if tUser then
-                rednet.send(tUser.nID, { sType = "text", nUserID = nUserID, sText = sText }, "chat")
-            end
-        else
-            for nUID, tUser in pairs(tUsers) do
+    local function sendExcept(sText, excludeID)
+        for nUID, tUser in pairs(tUsers) do
+            if nUID ~= excludeID then
                 rednet.send(tUser.nID, { sType = "text", nUserID = nUID, sText = sText }, "chat")
             end
         end
@@ -176,24 +160,27 @@ if sCommand == "host" then
     local tPingPongTimer = {}
     local function ping(nUserID)
         local tUser = tUsers[nUserID]
+        if not tUser then return end
         rednet.send(tUser.nID, { sType = "ping to client", nUserID = nUserID }, "chat")
         local timer = os.startTimer(15)
         tUser.bPingPonged = false
         tPingPongTimer[timer] = nUserID
     end
 
+    drawServerHeader()
+    addToDisplay("* Server started on #" .. sHostname)
+    drawStatusBar()
+
     local ok, err = pcall(parallel.waitForAny,
         function()
             while true do
                 local _, direction = os.pullEvent("mouse_scroll")
                 local _, maxY = historyWindow.getSize()
-                local maxScroll = math.max(0, #messageHistory - maxY)
+                local maxScroll = math.max(0, #dispHistory - maxY)
                 if direction == 1 then
-                    scrollPosition = math.max(scrollPosition - 1, 0)
-                    redrawHistory(nUsers, tUsers)
+                    scrollPos = math.max(scrollPos - 1, 0); redrawHistoryWindow()
                 elseif direction == -1 then
-                    scrollPosition = math.min(scrollPosition + 1, maxScroll)
-                    redrawHistory(nUsers, tUsers)
+                    scrollPos = math.min(scrollPos + 1, maxScroll); redrawHistoryWindow()
                 end
             end
         end,
@@ -204,10 +191,9 @@ if sCommand == "host" then
                 if nUserID and tUsers[nUserID] then
                     local tUser = tUsers[nUserID]
                     if not tUser.bPingPonged then
-                        local msg = "* " .. tUser.sUsername .. " has timed out"
-                        send(msg); printServerMessage(msg, nUsers, tUsers)
-                        tUsers[nUserID] = nil; nUsers = nUsers - 1
-                        drawStatusBar(nUsers, tUsers)
+                        local msg = "* " .. tUser.sUsername .. " timed out"
+                        send(msg); appendHistory(msg); addToDisplay(msg)
+                        tUsers[nUserID] = nil; nUsers = nUsers - 1; drawStatusBar()
                     else
                         ping(nUserID)
                     end
@@ -217,119 +203,176 @@ if sCommand == "host" then
         function()
             while true do
                 local tCommands = {
-                    ["me"] = function(tUser, sContent)
-                        if #sContent > 0 then
-                            local msg = "* " .. tUser.sUsername .. " " .. sContent
-                            send(msg); printServerMessage(msg, nUsers, tUsers)
-                        else
-                            send("* Usage: /me [words]", tUser.nUserID)
-                        end
+                    ["me"] = function(tUser, s)
+                        if #s > 0 then
+                            local msg = "* " .. tUser.sUsername .. " " .. s
+                            send(msg); appendHistory(msg); addToDisplay(msg)
+                        else send("* Usage: /me [words]") end
                     end,
-                    ["nick"] = function(tUser, sContent)
-                        if #sContent > 0 then
-                            local old = tUser.sUsername
-                            tUser.sUsername = sContent
-                            local msg = "* " .. old .. " is now known as " .. tUser.sUsername
-                            send(msg); printServerMessage(msg, nUsers, tUsers)
-                            drawStatusBar(nUsers, tUsers)
-                        else
-                            send("* Usage: /nick [nickname]", tUser.nUserID)
-                        end
+                    ["nick"] = function(tUser, s)
+                        if #s > 0 then
+                            local old = tUser.sUsername; tUser.sUsername = s
+                            local msg = "* " .. old .. " is now known as " .. s
+                            send(msg); appendHistory(msg); addToDisplay(msg); drawStatusBar()
+                        else send("* Usage: /nick [name]") end
                     end,
                     ["users"] = function(tUser, _)
-                        send("* Connected Users:", tUser.nUserID)
-                        local s = "*"
+                        local s = "* Online:"
                         for _, u in pairs(tUsers) do s = s .. " " .. u.sUsername end
-                        send(s, tUser.nUserID)
+                        send(s)
                     end,
                     ["help"] = function(tUser, _)
-                        send("* Available commands:", tUser.nUserID)
-                        local s = "*"
-                        for cmd in pairs(tCommands) do s = s .. " /" .. cmd end
-                        send(s .. " /logout", tUser.nUserID)
+                        send("* Commands: /me /nick /users /help /logout")
                     end,
                 }
 
                 local nSenderID, tMessage = rednet.receive("chat")
-                if type(tMessage) == "table" then
-                    if tMessage.sType == "login" then
-                        local nUserID  = tMessage.nUserID
-                        local sUsername = tMessage.sUsername
-                        if nUserID and sUsername then
-                            tUsers[nUserID] = { nID = nSenderID, nUserID = nUserID, sUsername = sUsername }
-                            nUsers = nUsers + 1
-                            local msg = "* " .. sUsername .. " has joined the chat"
-                            send(msg); printServerMessage(msg, nUsers, tUsers)
-                            drawStatusBar(nUsers, tUsers)
-                            ping(nUserID)
-                        end
-                    else
-                        local nUserID = tMessage.nUserID
-                        local tUser   = tUsers[nUserID]
-                        if tUser and tUser.nID == nSenderID then
-                            if tMessage.sType == "logout" then
-                                local msg = "* " .. tUser.sUsername .. " has left the chat"
-                                send(msg); printServerMessage(msg, nUsers, tUsers)
-                                tUsers[nUserID] = nil; nUsers = nUsers - 1
-                                drawStatusBar(nUsers, tUsers)
-                            elseif tMessage.sType == "chat" then
-                                local sMessage = tMessage.sText
-                                if sMessage then
-                                    local sCmd = string.match(sMessage, "^/([a-z]+)")
-                                    if sCmd then
-                                        local fn = tCommands[sCmd]
-                                        if fn then fn(tUser, string.sub(sMessage, #sCmd + 3))
-                                        else send("* Unrecognised command: /" .. sCmd, tUser.nUserID) end
-                                    else
-                                        local msg = "<" .. tUser.sUsername .. "> " .. tMessage.sText
-                                        send(msg); printServerMessage(msg, nUsers, tUsers)
-                                    end
+                if type(tMessage) ~= "table" then
+                    -- ignore non-table messages
+                elseif tMessage.sType == "login" then
+                    local nUserID   = tMessage.nUserID
+                    local sUsername = tMessage.sUsername
+                    if nUserID and sUsername then
+                        tUsers[nUserID] = { nID = nSenderID, nUserID = nUserID, sUsername = sUsername }
+                        nUsers = nUsers + 1
+
+                        local joinMsg = "* " .. sUsername .. " joined #" .. sHostname
+                        appendHistory(joinMsg)
+
+                        -- Send ack + history to new client
+                        rednet.send(nSenderID, {
+                            sType   = "login_ack",
+                            nUserID = nUserID,
+                            history = messageLog,
+                        }, "chat")
+
+                        sendExcept(joinMsg, nUserID)
+                        addToDisplay(joinMsg)
+                        drawStatusBar()
+                        ping(nUserID)
+                    end
+                else
+                    local nUserID = tMessage.nUserID
+                    local tUser   = tUsers[nUserID]
+                    if tUser and tUser.nID == nSenderID then
+                        if tMessage.sType == "logout" then
+                            local msg = "* " .. tUser.sUsername .. " left the chat"
+                            send(msg); appendHistory(msg); addToDisplay(msg)
+                            tUsers[nUserID] = nil; nUsers = nUsers - 1; drawStatusBar()
+
+                        elseif tMessage.sType == "chat" then
+                            local sText = tMessage.sText
+                            if sText then
+                                local sCmd = sText:match("^/([a-z]+)")
+                                if sCmd and tCommands[sCmd] then
+                                    tCommands[sCmd](tUser, sText:sub(#sCmd + 3))
+                                elseif sCmd then
+                                    send("* Unknown command: /" .. sCmd)
+                                else
+                                    local msg = "<" .. tUser.sUsername .. "> " .. sText
+                                    send(msg); appendHistory(msg); addToDisplay(msg)
                                 end
-                            elseif tMessage.sType == "ping to server" then
-                                rednet.send(tUser.nID, { sType = "pong to client", nUserID = nUserID }, "chat")
-                            elseif tMessage.sType == "pong to server" then
-                                tUser.bPingPonged = true
                             end
+
+                        elseif tMessage.sType == "ping to server" then
+                            rednet.send(tUser.nID, { sType = "pong to client", nUserID = nUserID }, "chat")
+
+                        elseif tMessage.sType == "pong to server" then
+                            tUser.bPingPonged = true
                         end
                     end
                 end
             end
         end
     )
-    if not ok then printError(err) end
 
+    if not ok then printError(err) end
     for nUserID, tUser in pairs(tUsers) do
         rednet.send(tUser.nID, { sType = "kick", nUserID = nUserID }, "chat")
     end
     rednet.unhost("chat", "chat_" .. sHostname)
     closeModem()
 
+-- ================================================================
+-- JOIN MODE
+-- ================================================================
 elseif sCommand == "join" then
     local sHostname = tArgs[2]
-    local sUsername = tArgs[3]
-    if sHostname == nil or sUsername == nil then printUsage(); return end
+    local sNickname = tArgs[3]
+
+    -- Channel select screen when no hostname provided
+    if not sHostname then
+        local label = os.computerLabel() or ("User" .. os.getComputerID())
+        term.setBackgroundColor(UI.background); term.clear()
+        paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+        term.setCursorPos(2, 1); term.setTextColor(UI.primary); term.write("PunOS")
+        term.setCursorPos(2, 2); term.setTextColor(UI.subtext); term.write("PublicChat")
+
+        term.setCursorPos(2, 4); term.setTextColor(UI.subtext)
+        term.write("Joining as: ")
+        term.setTextColor(UI.primary); term.write(label)
+
+        term.setCursorPos(2, 6); term.setTextColor(UI.text)
+        term.write('Channel name (blank for "general"):')
+
+        paintutils.drawFilledBox(2, 7, w - 1, 7, UI.border)
+        term.setCursorPos(3, 7)
+        term.setTextColor(UI.text); term.setBackgroundColor(UI.border)
+        local input = read()
+        term.setBackgroundColor(UI.background)
+
+        local trimmed = input and input:match("^%s*(.-)%s*$") or ""
+        sHostname = (trimmed ~= "") and trimmed or "general"
+    end
+
+    if not sNickname then
+        sNickname = os.computerLabel() or ("User" .. os.getComputerID())
+    end
+
     if not openModem() then return end
 
-    write("Looking up " .. sHostname .. "... ")
+    term.setBackgroundColor(UI.background); term.clear()
+    term.setCursorPos(2, 4); term.setTextColor(UI.subtext)
+    term.write("Looking up #" .. sHostname .. "...")
+
     local nHostID = rednet.lookup("chat", "chat_" .. sHostname)
-    if nHostID == nil then print("Failed."); closeModem(); return end
-    print("Success.")
+    if not nHostID then
+        term.setCursorPos(2, 5); term.setTextColor(UI.error)
+        term.write("No server found for #" .. sHostname .. ".")
+        term.setCursorPos(2, 6); term.setTextColor(UI.subtext)
+        term.write("Make sure a host is running: publicChat host " .. sHostname)
+        sleep(3); closeModem()
+        shell.run("/.menu"); return
+    end
 
     local nUserID = math.random(1, 2147483647)
-    rednet.send(nHostID, { sType = "login", nUserID = nUserID, sUsername = sUsername }, "chat")
+    rednet.send(nHostID, { sType = "login", nUserID = nUserID, sUsername = sNickname }, "chat")
 
-    local bPingPonged = true
+    -- Wait for login_ack + history. Falls through after 4s if server is older.
+    local history  = {}
+    local ackTimer = os.startTimer(4)
+    local waiting  = true
+    while waiting do
+        local ev, p1, p2, p3 = os.pullEvent()
+        if ev == "timer" and p1 == ackTimer then
+            waiting = false
+        elseif ev == "rednet_message" and p1 == nHostID and p3 == "chat" then
+            if type(p2) == "table" and p2.sType == "login_ack" and p2.nUserID == nUserID then
+                history = type(p2.history) == "table" and p2.history or {}
+                waiting = false
+            end
+        end
+    end
+
+    local bPingPonged   = true
     local pingPongTimer = os.startTimer(0)
-
     local function ping()
         rednet.send(nHostID, { sType = "ping to server", nUserID = nUserID }, "chat")
-        bPingPonged = false
+        bPingPonged   = false
         pingPongTimer = os.startTimer(15)
     end
 
-    local w, h = term.getSize()
-    local parentTerm = term.current()
-
+    local parentTerm    = term.current()
     local headerWindow  = window.create(parentTerm, 1, 1, w, 3, true)
     local historyWindow = window.create(parentTerm, 1, 4, w, h - 6, true)
     local inputWindow   = window.create(parentTerm, 1, h - 1, w, 1, true)
@@ -337,130 +380,105 @@ elseif sCommand == "join" then
 
     local messageHistory = {}
     local scrollPosition = 0
-    local maxHistoryLines = 1000
 
-    historyWindow.setCursorPos(1, 1)
     term.clear()
     term.setBackgroundColor(UI.background)
-    term.setTextColour(textColour)
 
     local function drawHeader()
-        headerWindow.setBackgroundColor(UI.border)
-        headerWindow.clear()
-        headerWindow.setCursorPos(2, 2)
-        headerWindow.setTextColor(UI.primary)
-        headerWindow.write("PublicChat")
-        headerWindow.setCursorPos(w - 8, 2)
-        headerWindow.setTextColor(UI.primary)
+        headerWindow.setBackgroundColor(UI.border); headerWindow.clear()
+        headerWindow.setCursorPos(2, 2); headerWindow.setTextColor(UI.primary)
+        headerWindow.write("PublicChat  #" .. sHostname)
+        headerWindow.setCursorPos(w - 8, 2); headerWindow.setTextColor(UI.primary)
         headerWindow.write("[CLIENT]")
-        headerWindow.setCursorPos(2, 3)
-        headerWindow.setTextColor(UI.subtext)
-        local info = "User: " .. sUsername .. " | #" .. sHostname
-        headerWindow.write(info)
-        local idInfo = "ID:" .. os.getComputerID()
-        headerWindow.setCursorPos(w - #idInfo - 1, 3)
-        headerWindow.write(idInfo)
+        headerWindow.setCursorPos(2, 3); headerWindow.setTextColor(UI.subtext)
+        headerWindow.write("User: " .. sNickname)
+        local id = "ID:" .. os.getComputerID()
+        headerWindow.setCursorPos(w - #id - 1, 3); headerWindow.write(id)
     end
 
     local function drawFooter()
-        footerWindow.setBackgroundColor(UI.border)
-        footerWindow.clear()
-        footerWindow.setCursorPos(2, 1)
-        footerWindow.setTextColor(UI.subtext)
-        local txt = "Type to chat | /logout to exit"
+        footerWindow.setBackgroundColor(UI.border); footerWindow.clear()
+        footerWindow.setCursorPos(2, 1); footerWindow.setTextColor(UI.subtext)
+        local txt = "Type to chat | /logout to leave"
         if scrollPosition > 0 then txt = txt .. " | Scrolled" end
         footerWindow.write(txt)
     end
 
     local function redrawHistory()
-        historyWindow.setBackgroundColor(UI.background)
-        historyWindow.clear()
-        historyWindow.setCursorPos(1, 1)
+        historyWindow.setBackgroundColor(UI.background); historyWindow.clear()
         local _, maxY = historyWindow.getSize()
-        local startLine = math.max(1, #messageHistory - maxY + 1 - scrollPosition)
-        local endLine   = math.min(#messageHistory, startLine + maxY - 1)
-        for i = startLine, endLine do
+        local start = math.max(1, #messageHistory - maxY + 1 - scrollPosition)
+        local stop  = math.min(#messageHistory, start + maxY - 1)
+        local y = 1
+        for i = start, stop do
             local msg = messageHistory[i]
             if msg then
-                if string.match(msg, "^%*") then
-                    historyWindow.setTextColour(UI.system)
-                    historyWindow.write(msg)
+                historyWindow.setCursorPos(1, y)
+                if msg:match("^%*") then
+                    historyWindow.setTextColour(UI.system); historyWindow.write(msg)
                 else
-                    local sUsernameBit = string.match(msg, "^<[^>]*>")
-                    if sUsernameBit then
-                        historyWindow.setTextColour(highlightColour)
-                        historyWindow.write(sUsernameBit)
-                        historyWindow.setTextColour(UI.text)
-                        historyWindow.write(string.sub(msg, #sUsernameBit + 1))
+                    local u = msg:match("^<[^>]*>")
+                    if u then
+                        historyWindow.setTextColour(highlightColour); historyWindow.write(u)
+                        historyWindow.setTextColour(textColour); historyWindow.write(msg:sub(#u + 1))
                     else
-                        historyWindow.setTextColour(UI.text)
-                        historyWindow.write(msg)
+                        historyWindow.setTextColour(textColour); historyWindow.write(msg)
                     end
                 end
-                if i < endLine then
-                    local _, y = historyWindow.getCursorPos()
-                    historyWindow.setCursorPos(1, y + 1)
-                end
+                y = y + 1
             end
         end
         drawFooter()
     end
 
-    local function printMessage(sMessage)
-        local maxWidth = w - 2
-        local lines = {}
-        local remaining = sMessage
-        while #remaining > 0 do
-            if #remaining <= maxWidth then
-                table.insert(lines, remaining); break
+    local function addMessage(msg)
+        -- Word-wrap long messages
+        local maxW = w - 2
+        local rem  = msg
+        while #rem > 0 do
+            if #rem <= maxW then
+                table.insert(messageHistory, rem); break
             else
-                local cut = maxWidth
-                local lastSpace = remaining:sub(1, maxWidth):match("^.*()%s")
-                if lastSpace and lastSpace > maxWidth / 2 then cut = lastSpace end
-                table.insert(lines, remaining:sub(1, cut))
-                remaining = remaining:sub(cut + 1)
+                local cut = maxW
+                local sp  = rem:sub(1, maxW):match("^.*()%s")
+                if sp and sp > maxW / 2 then cut = sp end
+                table.insert(messageHistory, rem:sub(1, cut))
+                rem = rem:sub(cut + 1)
             end
         end
-        for _, line in ipairs(lines) do
-            table.insert(messageHistory, line)
-        end
-        while #messageHistory > maxHistoryLines do
-            table.remove(messageHistory, 1)
-            if scrollPosition > 0 then scrollPosition = scrollPosition - 1 end
-        end
+        while #messageHistory > 1000 do table.remove(messageHistory, 1) end
         if scrollPosition == 0 then redrawHistory() end
     end
 
-    drawHeader()
-    drawFooter()
+    -- Show history received from server, then a divider
+    if #history > 0 then
+        for _, msg in ipairs(history) do addMessage(msg) end
+        addMessage("* --- live ---")
+    end
+
+    drawHeader(); drawFooter()
 
     local ok, err = pcall(parallel.waitForAny,
         function()
+            -- Scroll thread
             while true do
                 local _, direction = os.pullEvent("mouse_scroll")
                 local _, maxY = historyWindow.getSize()
                 local maxScroll = math.max(0, #messageHistory - maxY)
                 if direction == 1 then
-                    scrollPosition = math.max(scrollPosition - 1, 0)
-                    redrawHistory()
+                    scrollPosition = math.max(scrollPosition - 1, 0); redrawHistory()
                 elseif direction == -1 then
-                    scrollPosition = math.min(scrollPosition + 1, maxScroll)
-                    redrawHistory()
+                    scrollPosition = math.min(scrollPosition + 1, maxScroll); redrawHistory()
                 end
             end
         end,
         function()
+            -- Timer / resize thread
             while true do
-                local sEvent, timer = os.pullEvent()
-                if sEvent == "timer" then
-                    if timer == pingPongTimer then
-                        if not bPingPonged then
-                            printMessage("* Server timeout.")
-                            return
-                        else
-                            ping()
-                        end
-                    end
+                local sEvent, p1 = os.pullEvent()
+                if sEvent == "timer" and p1 == pingPongTimer then
+                    if not bPingPonged then addMessage("* Server timeout."); return
+                    else ping() end
                 elseif sEvent == "term_resize" then
                     w, h = parentTerm.getSize()
                     headerWindow.reposition(1, 1, w, 3)
@@ -472,35 +490,32 @@ elseif sCommand == "join" then
             end
         end,
         function()
+            -- Receive thread
             while true do
                 local nSenderID, tMessage = rednet.receive("chat")
-                if nSenderID == nHostID and type(tMessage) == "table" and tMessage.nUserID == nUserID then
-                    if tMessage.sType == "text" then
-                        if tMessage.sText then printMessage(tMessage.sText) end
+                if nSenderID == nHostID and type(tMessage) == "table"
+                and tMessage.nUserID == nUserID then
+                    if     tMessage.sType == "text"           then addMessage(tMessage.sText or "")
                     elseif tMessage.sType == "ping to client" then
                         rednet.send(nSenderID, { sType = "pong to server", nUserID = nUserID }, "chat")
-                    elseif tMessage.sType == "pong to client" then
-                        bPingPonged = true
-                    elseif tMessage.sType == "kick" then
-                        return
+                    elseif tMessage.sType == "pong to client" then bPingPonged = true
+                    elseif tMessage.sType == "kick"           then return
                     end
                 end
             end
         end,
         function()
+            -- Input thread
             local tSendHistory = {}
             while true do
                 term.redirect(inputWindow)
                 inputWindow.setBackgroundColor(UI.border)
-                inputWindow.setCursorPos(1, 1)
-                inputWindow.clearLine()
-                inputWindow.setTextColor(highlightColour)
-                inputWindow.write(": ")
+                inputWindow.setCursorPos(1, 1); inputWindow.clearLine()
+                inputWindow.setTextColor(highlightColour); inputWindow.write(": ")
                 inputWindow.setTextColor(textColour)
                 local sChat = read(nil, tSendHistory)
-                if string.match(sChat, "^/logout") then
-                    break
-                elseif sChat and sChat ~= "" then
+                if sChat:match("^/logout") then break
+                elseif sChat ~= "" then
                     rednet.send(nHostID, { sType = "chat", nUserID = nUserID, sText = sChat }, "chat")
                     table.insert(tSendHistory, sChat)
                 end
@@ -509,20 +524,16 @@ elseif sCommand == "join" then
     )
 
     term.redirect(parentTerm)
-    local _, finalH = term.getSize()
-    term.setCursorPos(1, finalH)
-    term.clearLine()
-    term.setCursorBlink(false)
+    local _, fh = term.getSize()
+    term.setCursorPos(1, fh); term.clearLine(); term.setCursorBlink(false)
     if not ok then printError(err) end
 
     rednet.send(nHostID, { sType = "logout", nUserID = nUserID }, "chat")
     closeModem()
     messageHistory = nil
 
-    term.setBackgroundColor(colors.black)
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("Disconnected.")
+    term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
+    print("Disconnected from #" .. sHostname .. ".")
     sleep(1)
     shell.run("/.menu")
 
