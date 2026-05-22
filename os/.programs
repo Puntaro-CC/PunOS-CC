@@ -124,7 +124,7 @@ end
 term.setBackgroundColor(colors.black)
 term.clear()
 
-if     nOption == 1  then shell.run("/publicChat.lua", "join", "general", os.computerLabel() or ("User"..os.getComputerID()))
+if     nOption == 1  then shell.run("/publicChat.lua", "join")
 elseif nOption == 2  then shell.run("os/.ChatApp")
 elseif nOption == 3  then shell.run("os/.tetris")
 elseif nOption == 4  then shell.run("os/.choosePaint")
