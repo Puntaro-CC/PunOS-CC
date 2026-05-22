@@ -116,13 +116,74 @@ local function doScan()
     scanning = false; drawList(); drawActions()
 end
 
+local function fileSharePrompt()
+    term.setBackgroundColor(UI.background); term.clear()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1); term.setTextColor(UI.primary); term.write("PunOS")
+    term.setCursorPos(2, 2); term.setTextColor(UI.subtext);  term.write("File Share")
+
+    local opts = {
+        { label = "Upload",   desc = "Send a file to the server",     key = "upload" },
+        { label = "Download", desc = "Get a file from the server",     key = "download" },
+        { label = "Back",     desc = "Return to scanner",              key = "back" },
+    }
+    local sel  = 1
+    local btnW = 24
+    local btnX = math.floor((w - btnW) / 2)
+    local btns = {}
+
+    local function drawPrompt()
+        btns = {}
+        for i, opt in ipairs(opts) do
+            local y = 5 + (i - 1) * 3
+            if i == sel then
+                paintutils.drawFilledBox(btnX, y, btnX + btnW - 1, y + 1, UI.primary)
+                term.setTextColor(UI.background)
+            else
+                paintutils.drawFilledBox(btnX, y, btnX + btnW - 1, y + 1, UI.border)
+                term.setTextColor(UI.text)
+            end
+            term.setCursorPos(btnX + 1, y);     term.write(opt.label)
+            term.setTextColor(i == sel and UI.background or UI.subtext)
+            term.setCursorPos(btnX + 1, y + 1); term.write(opt.desc)
+            btns[i] = { x1 = btnX, y1 = y, x2 = btnX + btnW - 1, y2 = y + 1 }
+        end
+    end
+
+    drawPrompt()
+
+    while true do
+        local e, p1, p2, p3 = os.pullEvent()
+        if e == "key" then
+            if p1 == keys.up   and sel > 1           then sel = sel - 1; drawPrompt()
+            elseif p1 == keys.down and sel < #opts   then sel = sel + 1; drawPrompt()
+            elseif p1 == keys.enter                  then return opts[sel].key
+            elseif p1 == keys.backspace              then return "back" end
+        elseif e == "mouse_click" then
+            local mx, my = p2, p3
+            for i, b in ipairs(btns) do
+                if mx >= b.x1 and mx <= b.x2 and my >= b.y1 and my <= b.y2 then
+                    if sel == i then return opts[i].key
+                    else sel = i; drawPrompt() end
+                    break
+                end
+            end
+        end
+    end
+end
+
 local function connectTo(r)
-    rednet.close(peripheral.getName(modem))
-    term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
     if r.proto == "nfp_share" then
-        shell.run("os/.fileShare")
+        local choice = fileSharePrompt()
+        rednet.close(peripheral.getName(modem))
+        term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
+        if     choice == "upload"   then shell.run("os/.upload")
+        elseif choice == "download" then shell.run("os/.download")
+        else   return end  -- "back" — re-open modem and stay in scanner
+        return
     elseif r.proto == "chat" then
-        -- Strip the "chat_" prefix to get the hostname
+        rednet.close(peripheral.getName(modem))
+        term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
         local hostname = r.label ~= "" and r.label or tostring(r.id)
         shell.run("/publicChat.lua", "join", hostname, os.computerLabel() or ("User" .. os.getComputerID()))
     end
@@ -146,7 +207,12 @@ local function uiLoop()
                 if selectedIdx - 1 >= scrollOff + listHeight then scrollOff = scrollOff + 1 end
                 drawList(); drawActions()
             elseif p1 == keys.enter and #results > 0 and results[selectedIdx] then
-                connectTo(results[selectedIdx]); return
+                connectTo(results[selectedIdx])
+                if not rednet.isOpen(peripheral.getName(modem)) then
+                    rednet.open(peripheral.getName(modem))
+                end
+                term.setBackgroundColor(UI.background); term.clear()
+                drawHeader(); drawFooter(); drawList(); drawActions()
             elseif p1 == keys.backspace then
                 break
             end
@@ -164,7 +230,12 @@ local function uiLoop()
                     local y = LIST_START + (i - 1 - scrollOff)
                     if my == y then
                         if selectedIdx == i and results[i] then
-                            connectTo(results[i]); return
+                            connectTo(results[i])
+                            if not rednet.isOpen(peripheral.getName(modem)) then
+                                rednet.open(peripheral.getName(modem))
+                            end
+                            term.setBackgroundColor(UI.background); term.clear()
+                            drawHeader(); drawFooter(); drawList(); drawActions()
                         else
                             selectedIdx = i; drawList(); drawActions()
                         end
