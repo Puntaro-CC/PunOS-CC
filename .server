@@ -1,4 +1,4 @@
--- PunOS File Share Server v6.3
+-- PunOS File Share Server v6.4
 -- Stores .nfp (paint) and .dfpwm (audio) files in separate directories
 
 local PROTOCOL    = "nfp_share"
@@ -28,7 +28,7 @@ end
 term.clear()
 term.setTextColor(colors.orange)
 local w, h = term.getSize()
-local title = "PUNOS FILE SHARE SERVER v6.3"
+local title = "PUNOS FILE SHARE SERVER v6.4"
 term.setCursorPos(math.floor((w - #title) / 2), 2)
 print(title)
 term.setCursorPos(1, 3)
