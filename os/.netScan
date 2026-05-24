@@ -94,12 +94,13 @@ end
 local function rawLookup(protocol)
     local myID = os.getComputerID()
 
-    -- Transmit lookup request; reply channel = our ID so servers respond to us
-    modem.transmit(65534, myID, {
+    -- Broadcast the lookup request using rednet so it gets properly wrapped.
+    -- rednet automatically sets the reply channel to our computer ID.
+    rednet.broadcast({
         sType     = "lookup",
         sProtocol = protocol,
         sHostname = nil,
-    })
+    }, "dns")
 
     local found = {}
     local seen  = {}
@@ -234,100 +235,4 @@ local function connectTo(r)
     if r.proto == "nfp_share" then
         local choice = fileSharePrompt()
         rednet.close(peripheral.getName(modem))
-        term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
-        if     choice == "upload"   then shell.run("os/.upload")
-        elseif choice == "download" then shell.run("os/.download")
-        else   return end
-        return
-    elseif r.proto == "chat" then
-        rednet.close(peripheral.getName(modem))
-        term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
-        shell.run("/publicChat.lua", "join", r.hostname,
-            os.computerLabel() or ("User" .. os.getComputerID()))
-    end
-end
-
-local function uiLoop()
-    term.setBackgroundColor(UI.background); term.clear()
-    drawHeader(); drawFooter()
-    doScan()
-
-    while true do
-        local e, p1, p2, p3 = os.pullEvent()
-
-        if e == "key" then
-            if p1 == keys.up and selectedIdx > 1 then
-                selectedIdx = selectedIdx - 1
-                if selectedIdx - 1 < scrollOff then scrollOff = scrollOff - 1 end
-                drawList(); drawActions()
-            elseif p1 == keys.down and selectedIdx < #results then
-                selectedIdx = selectedIdx + 1
-                if selectedIdx - 1 >= scrollOff + listHeight then scrollOff = scrollOff + 1 end
-                drawList(); drawActions()
-            elseif p1 == keys.enter and #results > 0 and results[selectedIdx] then
-                connectTo(results[selectedIdx])
-                if not rednet.isOpen(peripheral.getName(modem)) then
-                    rednet.open(peripheral.getName(modem))
-                end
-                term.setBackgroundColor(UI.background); term.clear()
-                drawHeader(); drawFooter(); drawList(); drawActions()
-            elseif p1 == keys.backspace then
-                break
-            end
-
-        elseif e == "mouse_click" then
-            local mx, my = p2, p3
-            if my == h then
-                if mx >= scanBtn.x1 and mx <= scanBtn.x2 then
-                    doScan()
-                elseif mx >= backBtn.x1 and mx <= backBtn.x2 then
-                    break
-                end
-            else
-                for i = 1 + scrollOff, math.min(#results, listHeight + scrollOff + 1) do
-                    local y = LIST_START + (i - 1 - scrollOff)
-                    if my == y then
-                        if selectedIdx == i and results[i] then
-                            connectTo(results[i])
-                            if not rednet.isOpen(peripheral.getName(modem)) then
-                                rednet.open(peripheral.getName(modem))
-                            end
-                            term.setBackgroundColor(UI.background); term.clear()
-                            drawHeader(); drawFooter(); drawList(); drawActions()
-                        else
-                            selectedIdx = i; drawList(); drawActions()
-                        end
-                        break
-                    end
-                end
-            end
-
-        elseif e == "mouse_scroll" then
-            if p1 == 1 and scrollOff + listHeight < #results then
-                scrollOff = scrollOff + 1; drawList()
-            elseif p1 == -1 and scrollOff > 0 then
-                scrollOff = scrollOff - 1; drawList()
-            end
-        end
-    end
-end
-
--- Background listener so this computer responds to scans from others
-local function listenLoop()
-    while true do
-        local senderId, msg = rednet.receive("punos_scan")
-        if type(msg) == "table" and msg.type == "punos_ping" then
-            rednet.send(senderId, {
-                type    = "punos_pong",
-                label   = os.getComputerLabel() or "",
-                service = "punos_client",
-            }, "punos_scan")
-        end
-    end
-end
-
-parallel.waitForAny(uiLoop, listenLoop)
-
-rednet.close(peripheral.getName(modem))
-term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
-shell.run("os/.programs")
+        term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(
