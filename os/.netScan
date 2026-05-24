@@ -72,8 +72,7 @@ local function drawList()
             else
                 term.setCursorPos(2, y); term.setTextColor(UI.text)
             end
-            local label = (r.label and r.label ~= "") and (" (" .. r.label .. ")") or ""
-            local line  = "ID:" .. tostring(r.id) .. "  " .. r.service .. label
+            local line = "ID:" .. tostring(r.id) .. "  " .. r.service .. " - " .. r.hostname
             if #line > w - 2 then line = line:sub(1, w - 2) end
             term.write(line)
         end
@@ -90,25 +89,84 @@ local function drawActions()
     end
 end
 
+-- Raw lookup: broadcasts on CC's internal CHANNEL_LOOKUP (65534) and collects
+-- hostname info from the DNS responses that rednet servers send back.
+local function rawLookup(protocol)
+    local myID = os.getComputerID()
+
+    -- Transmit lookup request; reply channel = our ID so servers respond to us
+    modem.transmit(65534, myID, {
+        sType     = "lookup",
+        sProtocol = protocol,
+        sHostname = nil,
+    })
+
+    local found = {}
+    local seen  = {}
+    local timer = os.startTimer(2)
+
+    while true do
+        local ev, p1, p2, p3, p4 = os.pullEvent()
+
+        if ev == "timer" and p1 == timer then
+            break
+
+        elseif ev == "rednet_message" then
+            -- CC converts some modem messages to rednet_message events.
+            -- Lookup responses arrive with protocol "dns".
+            local senderID, msg, proto = p1, p2, p3
+            if proto == "dns" and type(msg) == "table"
+            and msg.sType == "lookup response" and msg.sProtocol == protocol
+            and senderID ~= myID and not seen[senderID] then
+                seen[senderID] = true
+                table.insert(found, { id = senderID, hostname = msg.sHostname or tostring(senderID) })
+            end
+
+        elseif ev == "modem_message" then
+            -- Fallback: intercept raw modem message in case rednet didn't wrap it.
+            -- p1=side, p2=channel, p3=replyChannel, p4=rawMessage
+            local channel, replyID, raw = p2, p3, p4
+            if channel == myID and replyID ~= myID and type(raw) == "table" then
+                -- Unwrap rednet envelope if present
+                local msg = (type(raw.message) == "table") and raw.message or raw
+                if msg.sType == "lookup response" and msg.sProtocol == protocol
+                and not seen[replyID] then
+                    seen[replyID] = true
+                    table.insert(found, { id = replyID, hostname = msg.sHostname or tostring(replyID) })
+                end
+            end
+        end
+    end
+
+    return found
+end
+
 local function doScan()
     scanning = true; results = {}; selectedIdx = 1; scrollOff = 0
     drawList(); drawActions()
 
     local seen = {}
-    local lookups = {
-        { proto = "nfp_share", label = "File Share" },
-        { proto = "chat",      label = "Chat" },
+    local protocols = {
+        { proto = "nfp_share", label = "File Share", strip = nil       },
+        { proto = "chat",      label = "Chat",       strip = "chat_"   },
     }
 
-    for _, entry in ipairs(lookups) do
-        local ids = rednet.lookup(entry.proto)
-        if ids then
-            if type(ids) ~= "table" then ids = { ids } end
-            for _, id in ipairs(ids) do
-                if id ~= os.getComputerID() and not seen[id] then
-                    seen[id] = true
-                    table.insert(results, { id = id, label = "", service = entry.label, proto = entry.proto })
+    for _, entry in ipairs(protocols) do
+        local found = rawLookup(entry.proto)
+        for _, r in ipairs(found) do
+            if not seen[r.id] then
+                seen[r.id] = true
+                local hostname = r.hostname
+                -- Strip known prefixes (e.g. "chat_general" -> "general")
+                if entry.strip and hostname:sub(1, #entry.strip) == entry.strip then
+                    hostname = hostname:sub(#entry.strip + 1)
                 end
+                table.insert(results, {
+                    id       = r.id,
+                    hostname = hostname,
+                    service  = entry.label,
+                    proto    = entry.proto,
+                })
             end
         end
     end
@@ -123,9 +181,9 @@ local function fileSharePrompt()
     term.setCursorPos(2, 2); term.setTextColor(UI.subtext);  term.write("File Share")
 
     local opts = {
-        { label = "Upload",   desc = "Send a file to the server",     key = "upload" },
-        { label = "Download", desc = "Get a file from the server",     key = "download" },
-        { label = "Back",     desc = "Return to scanner",              key = "back" },
+        { label = "Upload",   desc = "Send a file to the server",  key = "upload"   },
+        { label = "Download", desc = "Get a file from the server", key = "download" },
+        { label = "Back",     desc = "Return to scanner",          key = "back"     },
     }
     local sel  = 1
     local btnW = 24
@@ -155,10 +213,10 @@ local function fileSharePrompt()
     while true do
         local e, p1, p2, p3 = os.pullEvent()
         if e == "key" then
-            if p1 == keys.up   and sel > 1           then sel = sel - 1; drawPrompt()
-            elseif p1 == keys.down and sel < #opts   then sel = sel + 1; drawPrompt()
-            elseif p1 == keys.enter                  then return opts[sel].key
-            elseif p1 == keys.backspace              then return "back" end
+            if p1 == keys.up   and sel > 1          then sel = sel - 1; drawPrompt()
+            elseif p1 == keys.down and sel < #opts  then sel = sel + 1; drawPrompt()
+            elseif p1 == keys.enter                 then return opts[sel].key
+            elseif p1 == keys.backspace             then return "back" end
         elseif e == "mouse_click" then
             local mx, my = p2, p3
             for i, b in ipairs(btns) do
@@ -179,13 +237,13 @@ local function connectTo(r)
         term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
         if     choice == "upload"   then shell.run("os/.upload")
         elseif choice == "download" then shell.run("os/.download")
-        else   return end  -- "back" — re-open modem and stay in scanner
+        else   return end
         return
     elseif r.proto == "chat" then
         rednet.close(peripheral.getName(modem))
         term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
-        local hostname = r.label ~= "" and r.label or tostring(r.id)
-        shell.run("/publicChat.lua", "join", hostname, os.computerLabel() or ("User" .. os.getComputerID()))
+        shell.run("/publicChat.lua", "join", r.hostname,
+            os.computerLabel() or ("User" .. os.getComputerID()))
     end
 end
 
