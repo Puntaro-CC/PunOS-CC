@@ -69,7 +69,7 @@ local function drawMenu()
 
     term.setCursorPos(2, h)
     term.setTextColor(UI.subtext)
-    term.write("W/S or Click: Select | Enter: Confirm")
+    term.write("W/S or Click: Select | Enter: Confirm | Backspace: Back")
 end
 
 drawMenu()
@@ -88,6 +88,9 @@ while true do
                 nOption = nOption + 1
                 drawMenu()
             end
+        elseif p == keys.backspace then
+            nOption = 3  -- Back
+            break
         elseif p == keys.enter then
             break
         end
