@@ -18,38 +18,54 @@ local function drawHeader()
     term.setCursorPos(2, 2); term.setTextColor(UI.subtext); term.write("Programs")
 end
 
-local programs = {
-    {name = "PublicChat",    icon = "##", desc = "No-history chat"},
-    {name = "SecureChat",    icon = "@#", desc = "Encrypted chat"},
-    {name = "Tetris",        icon = "[]", desc = "Classic game"},
-    {name = "Paint",         icon = "::", desc = "Image editor"},
-    {name = "Music",         icon = "~)", desc = "Stream music"},
-    {name = "Audio Player",  icon = ">>", desc = "Play local audio"},
-    {name = "File Share",    icon = "<>", desc = "Network files"},
-    {name = "Net Scanner",   icon = "@@", desc = "Scan network"},
-    {name = "File Manager",  icon = "FM", desc = "Rename/delete files"},
-    {name = "Calculator",    icon = "+-", desc = "Calc + calculus"},
-    {name = "CCDoom",        icon = ">!", desc = "3D shooter"},
-    {name = "Disk Browser",  icon = "[]", desc = "Browse disk drives"},
-    {name = "Settings",      icon = "* ", desc = "Themes & config"},
-    {name = "Updater",       icon = "^^", desc = "Check for updates"},
-    {name = "Back",          icon = "<<", desc = "Return to menu"},
+-- Page 1: main programs (no Back)
+local page1 = {
+    {name = "PublicChat",   icon = "##", desc = "No-history chat"},
+    {name = "SecureChat",   icon = "@#", desc = "Encrypted chat"},
+    {name = "Tetris",       icon = "[]", desc = "Classic game"},
+    {name = "Paint",        icon = "::", desc = "Image editor"},
+    {name = "Music",        icon = "~)", desc = "Stream music"},
+    {name = "Audio Player", icon = ">>", desc = "Play local audio"},
+    {name = "File Share",   icon = "<>", desc = "Network files"},
+    {name = "Net Scanner",  icon = "@@", desc = "Scan network"},
+    {name = "File Manager", icon = "FM", desc = "Rename/delete files"},
+    {name = "Calculator",   icon = "+-", desc = "Calc + calculus"},
+    {name = "CCDoom",       icon = ">!", desc = "3D shooter"},
+    {name = "Disk Browser", icon = "[]", desc = "Browse disk drives"},
+    {name = "Settings",     icon = "* ", desc = "Themes & config"},
+    {name = "Updater",      icon = "^^", desc = "Check for updates"},
 }
 
+-- Page 2: extra programs + Back
+local page2 = {
+    {name = "Back",         icon = "<<", desc = "Return to menu"},
+}
+
+local pages = {page1, page2}
+local currentPage = 1
 local nOption = 1
 local buttonRegions = {}
+
+local cols      = 2
+local boxWidth  = math.floor((w - 4) / cols) - 1
+local boxHeight = 2
+local startY    = 4
+local startX    = 2
+
+-- How many items fit per page (leave room for footer + page indicator)
+local rowsAvailable = math.floor((h - startY - 1) / boxHeight)
+local itemsPerPage  = rowsAvailable * cols
+
+local function getPage()
+    return pages[currentPage]
+end
 
 local function drawMenu()
     term.setBackgroundColor(UI.background)
     term.clear()
     drawHeader()
 
-    local cols      = 2
-    local boxWidth  = math.floor((w - 4) / cols) - 1
-    local boxHeight = 2
-    local startY    = 4
-    local startX    = 2
-
+    local programs = getPage()
     buttonRegions = {}
 
     for i, program in ipairs(programs) do
@@ -79,15 +95,33 @@ local function drawMenu()
         term.write(desc)
     end
 
+    -- Page indicator + footer
     paintutils.drawFilledBox(1, h, w, h, UI.background)
-    term.setCursorPos(2, h); term.setTextColor(UI.subtext)
-    term.write("WASD or Click: Select | Enter: Open")
+    term.setCursorPos(2, h)
+    term.setTextColor(UI.subtext)
+    local pageInfo = "WASD/Click: Select  Enter: Open  "
+    if currentPage < #pages then
+        pageInfo = pageInfo .. "Tab: Next page >"
+    else
+        pageInfo = pageInfo .. "Tab: < Prev page"
+    end
+    term.write(pageInfo)
+
+    -- Page dots
+    local dots = ""
+    for i = 1, #pages do
+        dots = dots .. (i == currentPage and "* " or ". ")
+    end
+    term.setCursorPos(w - #dots, h)
+    term.setTextColor(UI.primary)
+    term.write(dots)
 end
 
 drawMenu()
 
 while true do
     local e, p, p2, p3 = os.pullEvent()
+    local programs = getPage()
 
     if e == "key" then
         if p == keys.w or p == keys.up then
@@ -106,6 +140,16 @@ while true do
             if nOption > 1 then nOption = nOption - 1; drawMenu() end
         elseif p == keys.d or p == keys.right then
             if nOption < #programs then nOption = nOption + 1; drawMenu() end
+        elseif p == keys.tab then
+            currentPage = currentPage % #pages + 1
+            nOption = 1
+            drawMenu()
+        elseif p == keys.backspace then
+            -- Exit directly to .menu
+            term.setBackgroundColor(colors.black)
+            term.clear()
+            shell.run(".menu")
+            return
         elseif p == keys.enter then
             break
         end
@@ -124,19 +168,27 @@ end
 term.setBackgroundColor(colors.black)
 term.clear()
 
-if     nOption == 1  then shell.run("/publicChat.lua", "join")
-elseif nOption == 2  then shell.run("os/.ChatApp")
-elseif nOption == 3  then shell.run("os/.tetris")
-elseif nOption == 4  then shell.run("os/.choosePaint")
-elseif nOption == 5  then shell.run("os/.music")
-elseif nOption == 6  then shell.run("os/.audioPlayer")
-elseif nOption == 7  then shell.run("os/.fileShare")
-elseif nOption == 8  then shell.run("os/.netScan")
-elseif nOption == 9  then shell.run("os/.fileManager")
-elseif nOption == 10 then shell.run("os/.calculator")
-elseif nOption == 11 then shell.run("os/.doom")
-elseif nOption == 12 then shell.run("os/.diskBrowser")
-elseif nOption == 13 then shell.run("os/.settings")
-elseif nOption == 14 then shell.run("os/.updater")
-elseif nOption == 15 then shell.run(".menu")
+-- Resolve selection across pages
+local programs = getPage()
+local selected  = programs[nOption]
+if not selected then shell.run(".menu"); return end
+local name = selected.name
+
+-- Page 1 programs
+if     name == "PublicChat"   then shell.run("/publicChat.lua", "join")
+elseif name == "SecureChat"   then shell.run("os/.ChatApp")
+elseif name == "Tetris"       then shell.run("os/.tetris")
+elseif name == "Paint"        then shell.run("os/.choosePaint")
+elseif name == "Music"        then shell.run("os/.music")
+elseif name == "Audio Player" then shell.run("os/.audioPlayer")
+elseif name == "File Share"   then shell.run("os/.fileShare")
+elseif name == "Net Scanner"  then shell.run("os/.netScan")
+elseif name == "File Manager" then shell.run("os/.fileManager")
+elseif name == "Calculator"   then shell.run("os/.calculator")
+elseif name == "CCDoom"       then shell.run("os/.doom")
+elseif name == "Disk Browser" then shell.run("os/.diskBrowser")
+elseif name == "Settings"     then shell.run("os/.settings")
+elseif name == "Updater"      then shell.run("os/.updater")
+-- Page 2 programs
+elseif name == "Back"         then shell.run(".menu")
 end
