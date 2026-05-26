@@ -89,13 +89,9 @@ local function drawActions()
     end
 end
 
--- Raw lookup: broadcasts on CC's internal CHANNEL_LOOKUP (65534) and collects
--- hostname info from the DNS responses that rednet servers send back.
 local function rawLookup(protocol)
     local myID = os.getComputerID()
 
-    -- Broadcast the lookup request using rednet so it gets properly wrapped.
-    -- rednet automatically sets the reply channel to our computer ID.
     rednet.broadcast({
         sType     = "lookup",
         sProtocol = protocol,
@@ -113,8 +109,6 @@ local function rawLookup(protocol)
             break
 
         elseif ev == "rednet_message" then
-            -- CC converts some modem messages to rednet_message events.
-            -- Lookup responses arrive with protocol "dns".
             local senderID, msg, proto = p1, p2, p3
             if proto == "dns" and type(msg) == "table"
             and msg.sType == "lookup response" and msg.sProtocol == protocol
@@ -124,11 +118,8 @@ local function rawLookup(protocol)
             end
 
         elseif ev == "modem_message" then
-            -- Fallback: intercept raw modem message in case rednet didn't wrap it.
-            -- p1=side, p2=channel, p3=replyChannel, p4=rawMessage
             local channel, replyID, raw = p2, p3, p4
             if channel == myID and replyID ~= myID and type(raw) == "table" then
-                -- Unwrap rednet envelope if present
                 local msg = (type(raw.message) == "table") and raw.message or raw
                 if msg.sType == "lookup response" and msg.sProtocol == protocol
                 and not seen[replyID] then
@@ -158,7 +149,6 @@ local function doScan()
             if not seen[r.id] then
                 seen[r.id] = true
                 local hostname = r.hostname
-                -- Strip known prefixes (e.g. "chat_general" -> "general")
                 if entry.strip and hostname:sub(1, #entry.strip) == entry.strip then
                     hostname = hostname:sub(#entry.strip + 1)
                 end
@@ -167,6 +157,7 @@ local function doScan()
                     hostname = hostname,
                     service  = entry.label,
                     proto    = entry.proto,
+                    foundID  = r.id,
                 })
             end
         end
@@ -175,11 +166,220 @@ local function doScan()
     scanning = false; drawList(); drawActions()
 end
 
+-- Upload/download flow that skips server lookup (foundID already known)
+local function directUpload(foundID)
+    local PROTOCOL = "nfp_share"
+    local TYPE_INFO = {
+        paint = {ext = ".nfp",    dir = "/paint", label = "Paint image"},
+        audio = {ext = ".dfpwm", dir = "/audio",  label = "Audio file"}
+    }
+
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1); term.setTextColor(UI.primary); term.write("PunOS")
+    term.setCursorPos(2, 2); term.setTextColor(UI.subtext); term.write("File Upload")
+
+    term.setTextColor(UI.subtext); term.setCursorPos(2, 4)
+    term.write("What type of file?")
+    term.setTextColor(UI.text)
+    term.setCursorPos(2, 5); term.write("  [1] Paint image  (.nfp)")
+    term.setCursorPos(2, 6); term.write("  [2] Audio file   (.dfpwm)")
+    term.setCursorPos(2, 8); term.setTextColor(UI.subtext); term.write("Enter 1 or 2:")
+    term.setTextColor(UI.text); term.setCursorPos(2, 9)
+    local typeChoice = read()
+
+    local fileType
+    if typeChoice == "1" then fileType = "paint"
+    elseif typeChoice == "2" then fileType = "audio"
+    else
+        term.setTextColor(UI.error); term.setCursorPos(2, 11); term.write("Invalid choice.")
+        sleep(2); return
+    end
+
+    local info = TYPE_INFO[fileType]
+
+    -- List local files
+    local localFiles = {}
+    if fs.exists(info.dir) and fs.isDir(info.dir) then
+        for _, f in ipairs(fs.list(info.dir)) do
+            if not fs.isDir(info.dir .. "/" .. f) and f:sub(-#info.ext) == info.ext then
+                table.insert(localFiles, f)
+            end
+        end
+    end
+
+    term.setCursorPos(2, 11); term.setTextColor(UI.subtext)
+    term.write("Your " .. info.label .. " files:")
+    local ly = 12
+    if #localFiles > 0 then
+        for _, f in ipairs(localFiles) do
+            if ly > h - 4 then break end
+            term.setCursorPos(4, ly); term.setTextColor(UI.text); term.write(f)
+            ly = ly + 1
+        end
+    else
+        term.setCursorPos(4, ly); term.setTextColor(UI.subtext); term.write("(none found)")
+        ly = ly + 1
+    end
+
+    term.setCursorPos(2, ly + 1); term.setTextColor(UI.subtext)
+    term.write("Filename (must end in " .. info.ext .. "):")
+    term.setTextColor(UI.text); term.setCursorPos(2, ly + 2)
+    local filename = read()
+
+    if filename:sub(-#info.ext) ~= info.ext then
+        term.setCursorPos(2, ly + 4); term.setTextColor(UI.error)
+        term.write("Must end in " .. info.ext .. ". Cancelled.")
+        sleep(2); return
+    end
+
+    local filepath = info.dir .. "/" .. filename
+    if not fs.exists(filepath) then
+        term.setCursorPos(2, ly + 4); term.setTextColor(UI.error)
+        term.write("File not found: " .. filepath)
+        sleep(2); return
+    end
+
+    term.setCursorPos(2, ly + 4); term.setTextColor(UI.subtext)
+    term.write("Recipient ID (blank = public):")
+    term.setTextColor(UI.text); term.setCursorPos(2, ly + 5)
+    local recipientInput = read()
+    local recipient = nil
+    if recipientInput ~= "" then
+        recipient = tonumber(recipientInput)
+        if not recipient then
+            term.setCursorPos(2, ly + 7); term.setTextColor(UI.error)
+            term.write("Invalid recipient ID.")
+            sleep(2); return
+        end
+    end
+
+    local file = fs.open(filepath, "r")
+    local data = file.readAll()
+    file.close()
+
+    term.setCursorPos(2, ly + 7); term.setTextColor(UI.subtext)
+    term.write("Uploading...")
+
+    rednet.send(foundID, {
+        action    = "upload",
+        fileType  = fileType,
+        filename  = filename,
+        data      = data,
+        recipient = recipient
+    }, PROTOCOL)
+
+    local id, response = rednet.receive(PROTOCOL, 5)
+    term.setCursorPos(2, ly + 9)
+    if id == foundID and response and response.success then
+        term.setTextColor(UI.success); term.write("Success: " .. response.message)
+    else
+        term.setTextColor(UI.error)
+        term.write("Failed: " .. (response and response.message or "No response"))
+    end
+    sleep(2)
+end
+
+local function directDownload(foundID)
+    local PROTOCOL = "nfp_share"
+    local TYPE_INFO = {
+        paint = {ext = ".nfp",    dir = "/paint", label = "Paint image"},
+        audio = {ext = ".dfpwm", dir = "/audio",  label = "Audio file"}
+    }
+
+    term.setBackgroundColor(UI.background)
+    term.clear()
+    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
+    term.setCursorPos(2, 1); term.setTextColor(UI.primary); term.write("PunOS")
+    term.setCursorPos(2, 2); term.setTextColor(UI.subtext); term.write("File Download")
+
+    term.setTextColor(UI.subtext); term.setCursorPos(2, 4)
+    term.write("What type of file?")
+    term.setTextColor(UI.text)
+    term.setCursorPos(2, 5); term.write("  [1] Paint image  (.nfp)")
+    term.setCursorPos(2, 6); term.write("  [2] Audio file   (.dfpwm)")
+    term.setCursorPos(2, 8); term.setTextColor(UI.subtext); term.write("Enter 1 or 2:")
+    term.setTextColor(UI.text); term.setCursorPos(2, 9)
+    local typeChoice = read()
+
+    local fileType
+    if typeChoice == "1" then fileType = "paint"
+    elseif typeChoice == "2" then fileType = "audio"
+    else
+        term.setTextColor(UI.error); term.setCursorPos(2, 11); term.write("Invalid choice.")
+        sleep(2); return
+    end
+
+    local info = TYPE_INFO[fileType]
+
+    -- Fetch file list from server
+    term.setCursorPos(2, 11); term.setTextColor(UI.subtext)
+    term.write("Fetching file list...")
+
+    rednet.send(foundID, {action = "list", fileType = fileType}, PROTOCOL)
+    local id, response = rednet.receive(PROTOCOL, 5)
+
+    local ly = 12
+    if id == foundID and response and response.success then
+        term.setCursorPos(2, ly); term.setTextColor(UI.subtext)
+        term.write("Available " .. info.label .. " files:")
+        ly = ly + 1
+        if #response.files == 0 then
+            term.setCursorPos(4, ly); term.setTextColor(UI.subtext); term.write("(none available)")
+            ly = ly + 1
+        else
+            for _, fi in ipairs(response.files) do
+                if ly > h - 5 then break end
+                term.setCursorPos(4, ly)
+                if fi.public then term.setTextColor(UI.success) else term.setTextColor(UI.subtext) end
+                term.write(fi.name)
+                ly = ly + 1
+            end
+        end
+    else
+        term.setCursorPos(2, ly); term.setTextColor(UI.error); term.write("Could not fetch list.")
+        ly = ly + 1
+    end
+
+    term.setCursorPos(2, ly + 1); term.setTextColor(UI.subtext)
+    term.write("Filename (must end in " .. info.ext .. "):")
+    term.setTextColor(UI.text); term.setCursorPos(2, ly + 2)
+    local filename = read()
+
+    if filename:sub(-#info.ext) ~= info.ext then
+        term.setCursorPos(2, ly + 4); term.setTextColor(UI.error)
+        term.write("Must end in " .. info.ext .. ". Cancelled.")
+        sleep(2); return
+    end
+
+    if not fs.exists(info.dir) then fs.makeDir(info.dir) end
+
+    rednet.send(foundID, {
+        action   = "download",
+        fileType = fileType,
+        filename = filename
+    }, PROTOCOL)
+
+    local dlID, dlResponse = rednet.receive(PROTOCOL, 5)
+    term.setCursorPos(2, ly + 4)
+    if dlID == foundID and dlResponse and dlResponse.success then
+        local file = fs.open(info.dir .. "/" .. filename, "w")
+        file.write(dlResponse.data)
+        file.close()
+        term.setTextColor(UI.success); term.write("Saved to: " .. info.dir .. "/" .. filename)
+    else
+        local msg = dlResponse and dlResponse.message or "No response"
+        term.setTextColor(UI.error); term.write("Failed: " .. msg)
+    end
+    sleep(2)
+end
+
 local function fileSharePrompt()
     term.setBackgroundColor(UI.background); term.clear()
     paintutils.drawFilledBox(1, 1, w, 2, UI.border)
     term.setCursorPos(2, 1); term.setTextColor(UI.primary); term.write("PunOS")
-    term.setCursorPos(2, 2); term.setTextColor(UI.subtext);  term.write("File Share")
+    term.setCursorPos(2, 2); term.setTextColor(UI.subtext); term.write("File Share")
 
     local opts = {
         { label = "Upload",   desc = "Send a file to the server",  key = "upload"   },
@@ -234,11 +434,13 @@ end
 local function connectTo(r)
     if r.proto == "nfp_share" then
         local choice = fileSharePrompt()
-        rednet.close(peripheral.getName(modem))
-        term.setBackgroundColor(colors.black); term.clear(); term.setCursorPos(1, 1)
-        if     choice == "upload"   then shell.run("os/.upload")
-        elseif choice == "download" then shell.run("os/.download")
-        else   return end
+        if choice == "back" then return end
+        -- Use the direct upload/download functions, passing the already-known server ID
+        if choice == "upload" then
+            directUpload(r.foundID)
+        elseif choice == "download" then
+            directDownload(r.foundID)
+        end
         return
     elseif r.proto == "chat" then
         rednet.close(peripheral.getName(modem))
@@ -313,7 +515,6 @@ local function uiLoop()
     end
 end
 
--- Background listener so this computer responds to scans from others
 local function listenLoop()
     while true do
         local senderId, msg = rednet.receive("punos_scan")
