@@ -33,7 +33,6 @@ local function drawMenu()
     term.clear()
     drawHeader()
 
-    local cx = math.floor(w / 2)
     term.setCursorPos(math.floor((w - 5) / 2), 4)
     term.setTextColor(UI.primary)
     term.write("Paint")
@@ -63,7 +62,7 @@ local function drawMenu()
 
     term.setCursorPos(2, h)
     term.setTextColor(UI.subtext)
-    term.write("W/S or Click: Select | Enter: Confirm")
+    term.write("W/S or Click: Select | Enter: Confirm | Backspace: Back")
 end
 
 drawMenu()
@@ -75,7 +74,12 @@ while true do
             if nOption > 1 then nOption = nOption - 1; drawMenu() end
         elseif p == keys.s or p == keys.down then
             if nOption < #options then nOption = nOption + 1; drawMenu() end
-        elseif p == keys.enter then break end
+        elseif p == keys.backspace then
+            nOption = 3  -- Back
+            break
+        elseif p == keys.enter then
+            break
+        end
     elseif e == "mouse_click" then
         local mx, my = p2, p3
         for i, r in ipairs(buttonRegions) do
