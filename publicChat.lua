@@ -5,6 +5,11 @@ local tArgs = { ... }
 local UI = dofile("/os/loadTheme.lua")
 UI.system = UI.secondary
 
+local sSpeaker = peripheral.find("speaker")
+local function blip()
+    if sSpeaker then sSpeaker.playNote("bit", 1, 12) end
+end
+
 local function printUsage()
     local p = arg[0] or fs.getName(shell.getRunningProgram())
     print("Usages:")
@@ -270,7 +275,7 @@ if sCommand == "host" then
                                     send("* Unknown command: /" .. sCmd)
                                 else
                                     local msg = "<" .. tUser.sUsername .. "> " .. sText
-                                    send(msg); appendHistory(msg); addToDisplay(msg)
+                                    send(msg); appendHistory(msg); addToDisplay(msg); blip()
                                 end
                             end
 
@@ -495,7 +500,7 @@ elseif sCommand == "join" then
                 local nSenderID, tMessage = rednet.receive("chat")
                 if nSenderID == nHostID and type(tMessage) == "table"
                 and tMessage.nUserID == nUserID then
-                    if     tMessage.sType == "text"           then addMessage(tMessage.sText or "")
+                    if     tMessage.sType == "text"           then addMessage(tMessage.sText or ""); blip()
                     elseif tMessage.sType == "ping to client" then
                         rednet.send(nSenderID, { sType = "pong to server", nUserID = nUserID }, "chat")
                     elseif tMessage.sType == "pong to client" then bPingPonged = true
