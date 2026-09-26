@@ -1,22 +1,9 @@
 os.pullEvent = os.pullEventRaw
-term.setTextColor(colors.orange)
 
 local w, h = term.getSize()
 local UI = dofile("/os/loadTheme.lua")
-
-function printCentered(y, s, color)
-    color = color or UI.text
-    local x = math.floor((w - string.len(s)) / 2)
-    term.setCursorPos(x, y)
-    term.setTextColor(color)
-    term.write(s)
-end
-
-local function drawHeader()
-    paintutils.drawFilledBox(1, 1, w, 2, UI.border)
-    term.setCursorPos(2, 1); term.setTextColor(UI.primary); term.write("PunOS")
-    term.setCursorPos(2, 2); term.setTextColor(UI.subtext); term.write("Programs")
-end
+local CommonUI = dofile("/os/CommonUI.lua")
+local ui = CommonUI.New(term)
 
 -- Page 1: main programs (no Back)
 local page1 = {
@@ -38,13 +25,11 @@ local page1 = {
 
 -- Page 2: extra programs + Back
 local page2 = {
+    {name = "Piano Studio", icon = "()", desc = "Play + export DFPWM"},
     {name = "Back",         icon = "<<", desc = "Return to menu"},
 }
 
 local pages = {page1, page2}
-local currentPage = 1
-local nOption = 1
-local buttonRegions = {}
 
 local cols      = 2
 local boxWidth  = math.floor((w - 4) / cols) - 1
@@ -52,130 +37,152 @@ local boxHeight = 2
 local startY    = 4
 local startX    = 2
 
--- How many items fit per page (leave room for footer + page indicator)
-local rowsAvailable = math.floor((h - startY - 1) / boxHeight)
-local itemsPerPage  = rowsAvailable * cols
+-- ================================================================
+-- CommonUI component -- owns page/selection state, Fetch() builds
+-- the whole frame, OnEvent() handles key + mouse_click.
+-- ================================================================
+local ProgramsList = CommonUI.EmptyControl()
+ProgramsList.PosX, ProgramsList.PosY = 1, 1
+ProgramsList.SizeX, ProgramsList.SizeY = w, h
+ProgramsList.currentPage = 1
+ProgramsList.nOption = 1
+ProgramsList.buttonRegions = {}
+ProgramsList.Chosen = nil
 
-local function getPage()
-    return pages[currentPage]
+local function getPage(self)
+    return pages[self.currentPage]
 end
 
-local function drawMenu()
-    term.setBackgroundColor(UI.background)
-    term.clear()
-    drawHeader()
+function ProgramsList:Fetch()
+    local px = {}
+    local function set(x, y, bg, fg, ch)
+        if x < 1 or x > w or y < 1 or y > h then return end
+        px[x .. ";" .. y] = CommonUI.MakePixel(bg, fg, ch)
+    end
+    local function fillRow(y, x1, x2, bg, fg)
+        for x = x1, x2 do set(x, y, bg, fg, " ") end
+    end
+    local function text(x, y, s, bg, fg)
+        for i = 1, #s do set(x + i - 1, y, bg, fg, s:sub(i, i)) end
+    end
 
-    local programs = getPage()
-    buttonRegions = {}
+    for y = 1, h do fillRow(y, 1, w, UI.background, UI.text) end
+
+    -- Header
+    fillRow(1, 1, w, UI.border, UI.text)
+    fillRow(2, 1, w, UI.border, UI.text)
+    text(2, 1, "PunOS", UI.border, UI.primary)
+    text(2, 2, "Programs", UI.border, UI.subtext)
+
+    -- Grid
+    local programs = getPage(self)
+    self.buttonRegions = {}
 
     for i, program in ipairs(programs) do
         local col = (i - 1) % cols
         local row = math.floor((i - 1) / cols)
-        local x   = startX + col * (boxWidth + 2)
-        local y   = startY + row * boxHeight
+        local x = startX + col * (boxWidth + 2)
+        local y = startY + row * boxHeight
 
-        if y + boxHeight > h - 1 then break end
+        if y + boxHeight <= h - 1 then
+            self.buttonRegions[i] = {x1 = x, y1 = y, x2 = x + boxWidth - 1, y2 = y + boxHeight - 1}
 
-        buttonRegions[i] = { x1 = x, y1 = y, x2 = x + boxWidth - 1, y2 = y + boxHeight - 1 }
+            local bg, fg
+            if i == self.nOption then bg, fg = UI.primary, UI.background
+            else bg, fg = UI.border, UI.text end
 
-        if i == nOption then
-            paintutils.drawFilledBox(x, y, x + boxWidth - 1, y + boxHeight - 1, UI.primary)
-            term.setTextColor(UI.background)
-        else
-            paintutils.drawFilledBox(x, y, x + boxWidth - 1, y + boxHeight - 1, UI.border)
-            term.setTextColor(UI.text)
+            for yy = y, y + boxHeight - 1 do fillRow(yy, x, x + boxWidth - 1, bg, fg) end
+            text(x + 1, y, program.icon .. " " .. program.name, bg, fg)
+
+            local descFg = (i == self.nOption) and UI.background or UI.subtext
+            local desc = program.desc
+            if #desc > boxWidth - 2 then desc = desc:sub(1, boxWidth - 5) .. "..." end
+            text(x + 1, y + 1, desc, bg, descFg)
         end
-
-        term.setCursorPos(x + 1, y)
-        term.write(program.icon .. " " .. program.name)
-        term.setTextColor(UI.subtext)
-        term.setCursorPos(x + 1, y + 1)
-        local desc = program.desc
-        if #desc > boxWidth - 2 then desc = desc:sub(1, boxWidth - 5) .. "..." end
-        term.write(desc)
     end
 
-    -- Page indicator + footer
-    paintutils.drawFilledBox(1, h, w, h, UI.background)
-    term.setCursorPos(2, h)
-    term.setTextColor(UI.subtext)
+    -- Footer: hints + page dots
+    fillRow(h, 1, w, UI.background, UI.text)
     local pageInfo = "WASD/Click: Select  Enter: Open  "
-    if currentPage < #pages then
+    if self.currentPage < #pages then
         pageInfo = pageInfo .. "Tab: Next page >"
     else
         pageInfo = pageInfo .. "Tab: < Prev page"
     end
-    term.write(pageInfo)
+    text(2, h, pageInfo, UI.background, UI.subtext)
 
-    -- Page dots
     local dots = ""
     for i = 1, #pages do
-        dots = dots .. (i == currentPage and "* " or ". ")
+        dots = dots .. (i == self.currentPage and "* " or ". ")
     end
-    term.setCursorPos(w - #dots, h)
-    term.setTextColor(UI.primary)
-    term.write(dots)
+    text(w - #dots, h, dots, UI.background, UI.primary)
+
+    return px
 end
 
-drawMenu()
+function ProgramsList:OnEvent(event, p1, p2, p3)
+    local programs = getPage(self)
 
-while true do
-    local e, p, p2, p3 = os.pullEvent()
-    local programs = getPage()
-
-    if e == "key" then
-        if p == keys.w or p == keys.up then
-            if nOption > 2 then nOption = nOption - 2
-            elseif nOption == 2 then nOption = 1 end
-            drawMenu()
-        elseif p == keys.s or p == keys.down then
-            if nOption <= #programs - 2 then
-                nOption = nOption + 2
-                if nOption > #programs then nOption = #programs end
-            elseif nOption == #programs - 1 then
-                nOption = #programs
+    if event == "key" then
+        if p1 == keys.w or p1 == keys.up then
+            if self.nOption > 2 then self.nOption = self.nOption - 2
+            elseif self.nOption == 2 then self.nOption = 1 end
+            ui:DrawComponent(self.__ID__)
+        elseif p1 == keys.s or p1 == keys.down then
+            if self.nOption <= #programs - 2 then
+                self.nOption = self.nOption + 2
+                if self.nOption > #programs then self.nOption = #programs end
+            elseif self.nOption == #programs - 1 then
+                self.nOption = #programs
             end
-            drawMenu()
-        elseif p == keys.a or p == keys.left then
-            if nOption > 1 then nOption = nOption - 1; drawMenu() end
-        elseif p == keys.d or p == keys.right then
-            if nOption < #programs then nOption = nOption + 1; drawMenu() end
-        elseif p == keys.tab then
-            currentPage = currentPage % #pages + 1
-            nOption = 1
-            drawMenu()
-        elseif p == keys.backspace then
-            -- Exit directly to .menu
-            term.setBackgroundColor(colors.black)
-            term.clear()
-            shell.run(".menu")
-            return
-        elseif p == keys.enter then
-            break
+            ui:DrawComponent(self.__ID__)
+        elseif p1 == keys.a or p1 == keys.left then
+            if self.nOption > 1 then self.nOption = self.nOption - 1; ui:DrawComponent(self.__ID__) end
+        elseif p1 == keys.d or p1 == keys.right then
+            if self.nOption < #programs then self.nOption = self.nOption + 1; ui:DrawComponent(self.__ID__) end
+        elseif p1 == keys.tab then
+            self.currentPage = self.currentPage % #pages + 1
+            self.nOption = 1
+            ui:DrawComponent(self.__ID__)
+        elseif p1 == keys.backspace then
+            self.Chosen = "__EXIT__"
+        elseif p1 == keys.enter then
+            self.Chosen = programs[self.nOption] and programs[self.nOption].name
         end
 
-    elseif e == "mouse_click" then
+    elseif event == "mouse_click" then
         local mx, my = p2, p3
-        for i, r in ipairs(buttonRegions) do
+        for i, r in ipairs(self.buttonRegions) do
             if mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2 then
-                nOption = i; drawMenu(); sleep(0.08); break
+                self.nOption = i
+                ui:DrawComponent(self.__ID__)
+                sleep(0.08)
+                self.Chosen = programs[i].name
+                break
             end
         end
-        break
     end
+end
+
+-- ================================================================
+-- Run
+-- ================================================================
+local progId = ui:AddComponent(ProgramsList)
+ui:FocusComponent(progId)
+ui:DrawComponent(progId)
+
+while not ProgramsList.Chosen do
+    local event, p1, p2, p3 = os.pullEvent()
+    ProgramsList:OnEvent(event, p1, p2, p3)
 end
 
 term.setBackgroundColor(colors.black)
 term.clear()
 
--- Resolve selection across pages
-local programs = getPage()
-local selected  = programs[nOption]
-if not selected then shell.run(".menu"); return end
-local name = selected.name
+local name = ProgramsList.Chosen
 
--- Page 1 programs
-if     name == "PublicChat"   then shell.run("/publicChat.lua", "join")
+if     name == "__EXIT__"     then shell.run(".menu")
+elseif name == "PublicChat"   then shell.run("/publicChat.lua", "join")
 elseif name == "SecureChat"   then shell.run("os/.ChatApp")
 elseif name == "Tetris"       then shell.run("os/.tetris")
 elseif name == "Paint"        then shell.run("os/.choosePaint")
@@ -189,6 +196,6 @@ elseif name == "CCDoom"       then shell.run("os/.doom")
 elseif name == "Disk Browser" then shell.run("os/.diskBrowser")
 elseif name == "Settings"     then shell.run("os/.settings")
 elseif name == "Updater"      then shell.run("os/.updater")
--- Page 2 programs
+elseif name == "Piano Studio" then shell.run("os/.piano")
 elseif name == "Back"         then shell.run(".menu")
 end
