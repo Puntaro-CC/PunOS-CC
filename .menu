@@ -1,34 +1,9 @@
 os.pullEvent = os.pullEventRaw
 local UI = dofile("/os/loadTheme.lua")
+local CommonUI = dofile("/os/CommonUI.lua")
 
 local w, h = term.getSize()
-
-local function drawBox(x, y, width, height, color)
-    paintutils.drawBox(x, y, x + width - 1, y + height - 1, color)
-end
-
-local function printCentered(y, s, color)
-    local x = math.floor((w - string.len(s)) / 2)
-    term.setCursorPos(x, y)
-    term.setTextColor(color or UI.text)
-    term.write(s)
-end
-
-local function drawHeader()
-    paintutils.drawFilledBox(1, 1, w, 3, UI.border)
-    term.setCursorPos(2, 2)
-    term.setTextColor(UI.primary)
-    term.write("PunOS")
-    local info = "ID:" .. os.getComputerID()
-    term.setCursorPos(w - #info - 1, 2)
-    term.setTextColor(UI.subtext)
-    term.write(info)
-    local time = textutils.formatTime(os.time(), false)
-    local day  = "Day " .. os.day()
-    term.setCursorPos(2, 3)
-    term.setTextColor(UI.subtext)
-    term.write(day .. " | " .. time)
-end
+local ui = CommonUI.New(term)
 
 local menuOptions = {
     {name = "Command",   icon = ">_"},
@@ -38,78 +13,112 @@ local menuOptions = {
     {name = "Uninstall", icon = "! "},
 }
 
-local nOption = 1
-local boxWidth = 20
-local boxHeight = 2
-local buttonRegions = {}
+local boxWidth, boxHeight = 20, 2
 
-local function drawMenu()
-    term.setBackgroundColor(UI.background)
-    term.clear()
-    drawHeader()
-    printCentered(5, "MAIN MENU", UI.primary)
+-- ---- MenuList component ----
+-- Owns selection state + header (ID/day/time) and draws both via Fetch().
+local MenuList = CommonUI.EmptyControl()
+MenuList.PosX, MenuList.PosY = 1, 1
+MenuList.SizeX, MenuList.SizeY = w, h
+MenuList.DrawPriority = 1
+MenuList.nOption = 1
+MenuList.buttonRegions = {}
 
+function MenuList:Fetch()
+    local px = {}
+    local function set(x, y, bg, fg, ch)
+        px[x .. ";" .. y] = CommonUI.MakePixel(bg, fg, ch)
+    end
+    local function fillRow(y, x1, x2, bg, fg)
+        for x = x1, x2 do set(x, y, bg, fg, " ") end
+    end
+    local function text(x, y, s, bg, fg)
+        for i = 1, #s do set(x + i - 1, y, bg, fg, s:sub(i, i)) end
+    end
+
+    -- Clear whole screen to background
+    for y = 1, h do fillRow(y, 1, w, UI.background, UI.text) end
+
+    -- Header bar
+    fillRow(1, 1, w, UI.border, UI.text)
+    fillRow(2, 1, w, UI.border, UI.text)
+    fillRow(3, 1, w, UI.border, UI.text)
+    text(2, 2, "PunOS", UI.border, UI.primary)
+    local info = "ID:" .. os.getComputerID()
+    text(w - #info - 1, 2, info, UI.border, UI.subtext)
+    local timeStr = "Day " .. os.day() .. " | " .. textutils.formatTime(os.time(), false)
+    text(2, 3, timeStr, UI.border, UI.subtext)
+
+    -- Title
+    local title = "MAIN MENU"
+    text(math.floor((w - #title) / 2), 5, title, UI.background, UI.primary)
+
+    -- Option boxes
     local totalHeight = (#menuOptions * boxHeight) + ((#menuOptions - 1) * 1)
     local startY = math.floor((h - totalHeight - 7) / 2) + 6
     if startY + totalHeight > h - 2 then startY = 7 end
 
-    buttonRegions = {}
-
+    self.buttonRegions = {}
     for i, option in ipairs(menuOptions) do
         local y = startY + (i - 1) * (boxHeight + 1)
         local x = math.floor((w - boxWidth) / 2)
+        self.buttonRegions[i] = {x1 = x, y1 = y, x2 = x + boxWidth - 1, y2 = y + boxHeight - 1}
 
-        buttonRegions[i] = {x1 = x, y1 = y, x2 = x + boxWidth - 1, y2 = y + boxHeight - 1}
+        local bg, fg
+        if i == self.nOption then bg, fg = UI.primary, UI.background
+        else bg, fg = UI.border, UI.text end
 
-        if i == nOption then
-            paintutils.drawFilledBox(x, y, x + boxWidth - 1, y + boxHeight - 1, UI.primary)
-            term.setTextColor(UI.background)
-        else
-            drawBox(x, y, boxWidth, boxHeight, UI.border)
-            term.setTextColor(UI.text)
-        end
-
-        local text = option.icon .. " " .. option.name
-        term.setCursorPos(x + math.floor((boxWidth - #text) / 2), y + math.floor(boxHeight / 2))
-        term.write(text)
+        for yy = y, y + boxHeight - 1 do fillRow(yy, x, x + boxWidth - 1, bg, fg) end
+        local label = option.icon .. " " .. option.name
+        text(x + math.floor((boxWidth - #label) / 2), y + math.floor(boxHeight / 2), label, bg, fg)
     end
 
-    term.setCursorPos(2, h)
-    term.setTextColor(UI.subtext)
-    term.write("W/S or Click: Select | Enter: Confirm")
+    text(2, h, "W/S or Click: Select | Enter: Confirm", UI.background, UI.subtext)
+    return px
 end
 
-local timerID = os.startTimer(1)
-drawMenu()
-
-while true do
-    local e, p, p2, p3 = os.pullEvent()
-
-    if e == "key" then
-        if p == keys.w or p == keys.up then
-            if nOption > 1 then nOption = nOption - 1; drawMenu() end
-        elseif p == keys.s or p == keys.down then
-            if nOption < #menuOptions then nOption = nOption + 1; drawMenu() end
-        elseif p == keys.enter then break end
-
-    elseif e == "mouse_click" then
+function MenuList:OnEvent(event, p1, p2, p3)
+    if event == "key" then
+        if p1 == keys.w or p1 == keys.up then
+            if self.nOption > 1 then self.nOption = self.nOption - 1; ui:DrawComponent(self.__ID__) end
+        elseif p1 == keys.s or p1 == keys.down then
+            if self.nOption < #menuOptions then self.nOption = self.nOption + 1; ui:DrawComponent(self.__ID__) end
+        elseif p1 == keys.enter then
+            self.Chosen = self.nOption
+        end
+    elseif event == "mouse_click" then
         local mx, my = p2, p3
-        for i, r in ipairs(buttonRegions) do
+        for i, r in ipairs(self.buttonRegions) do
             if mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2 then
-                nOption = i; drawMenu(); sleep(0.08); break
+                self.nOption = i
+                ui:DrawComponent(self.__ID__)
+                self.Chosen = i
+                break
             end
         end
-        break
+    end
+end
 
-    elseif e == "timer" and p == timerID then
-        drawHeader()
-        timerID = os.startTimer(1)
+-- ---- Run ----
+local menuId = ui:AddComponent(MenuList)
+ui:FocusComponent(menuId)
+ui:DrawComponent(menuId)
+
+local headerTimer = os.startTimer(1)
+while not MenuList.Chosen do
+    local event, p1, p2, p3 = os.pullEvent()
+    if event == "timer" and p1 == headerTimer then
+        ui:DrawComponent(menuId)   -- refresh clock/day
+        headerTimer = os.startTimer(1)
+    else
+        MenuList:OnEvent(event, p1, p2, p3)
     end
 end
 
 term.setBackgroundColor(colors.black)
 term.clear()
 
+local nOption = MenuList.Chosen
 if     nOption == 1 then shell.run("os/.command")
 elseif nOption == 2 then shell.run("os/.programs")
 elseif nOption == 3 then shell.run("os/.settings")
