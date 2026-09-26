@@ -1,32 +1,104 @@
-os.pullEvent = os.pullEventRaw
-local UI = dofile("/os/loadTheme.lua")
-local CommonUI = dofile("/os/CommonUI.lua")
+-- CC:Tweaked Piano Studio: Multi-Track Looper & Clean DFPWM Exporter
+-- Rewritten on CommonUI (pixel-table drawing) + decoupled live/export pitch
+-- + exports into /audio so File Share can see it.
 
+local dfpwm = require("cc.audio.dfpwm")
+local CommonUI = dofile("/os/CommonUI.lua")
+local UI = dofile("/os/loadTheme.lua")   -- just for the PunOS-style header bar
+
+local speaker = peripheral.find("speaker")
+if not speaker then
+    error("No speaker attached! Please attach a speaker peripheral.")
+end
+
+local AUDIO_DIR = "/audio"
+
+local base_notes = {
+    { name = "C",  key = keys.a, offset = 0,  isBlack = false },
+    { name = "C#", key = keys.w, offset = 1,  isBlack = true  },
+    { name = "D",  key = keys.s, offset = 2,  isBlack = false },
+    { name = "D#", key = keys.e, offset = 3,  isBlack = true  },
+    { name = "E",  key = keys.d, offset = 4,  isBlack = false },
+    { name = "F",  key = keys.f, offset = 5,  isBlack = false },
+    { name = "F#", key = keys.t, offset = 6,  isBlack = true  },
+    { name = "G",  key = keys.g, offset = 7,  isBlack = false },
+    { name = "G#", key = keys.y, offset = 8,  isBlack = true  },
+    { name = "A",  key = keys.h, offset = 9,  isBlack = false },
+    { name = "A#", key = keys.u, offset = 10, isBlack = true  },
+    { name = "B",  key = keys.j, offset = 11, isBlack = false },
+    { name = "C+", key = keys.k, offset = 12, isBlack = false },
+}
+
+local instruments = { "harp", "flute", "bell", "guitar", "bit", "bass" }
+local selectedInstrumentIndex = 1
+
+-- ---- Pitch handling ----
+-- Minecraft note blocks (speaker.playNote) only accept an integer pitch of
+-- 0-24 -- that's a hardware limit, not something we can fix. The old code
+-- clamped to that range and then RECORDED the clamped value, so every note
+-- in the lower octave that fell below 0 collapsed onto pitch 0 -- multiple
+-- different keys all became the same note, both live and in the exported
+-- file. The DFPWM exporter doesn't go through note blocks at all though; it
+-- synthesizes real sine waves from a frequency, so it was never actually
+-- limited to 0-24 -- only the clamp made it seem that way.
+-- Fix: track two numbers per note. `livePitch` is clamped 0-24 and is only
+-- ever sent to speaker.playNote. `exportSemitone` is the true, unclamped
+-- semitone offset and is what gets recorded into tracks / used by the
+-- exporter, so octave changes always produce an audibly different exported
+-- note even where the live monitor has to clamp.
+local basePitchC4 = 6
+local currentOctave = 0
+local OCTAVE_MIN, OCTAVE_MAX = -3, 3   -- export isn't limited to the note-block range
+
+local function livePitch(offset)
+    local p = basePitchC4 + offset + (currentOctave * 12)
+    if p < 0 then return 0 end
+    if p > 24 then return 24 end
+    return p
+end
+
+local function exportSemitone(offset)
+    return basePitchC4 + offset + (currentOctave * 12)
+end
+
+local heldNotes = {}
+
+-- Loop / Recording Variables
+local LOOP_LENGTH = 32
+local currentTick = 1
+local isRecording = false
+local isLooping = false
+local isExporting = false
+local tracks = {} -- { tick = { {inst="harp", pitch=<export semitone>}, ... } }
+
+local function findNoteByKey(key)
+    for _, note in ipairs(base_notes) do
+        if note.key == key then return note end
+    end
+    return nil
+end
+
+local function pitchToFreq(semitone)
+    return 220 * (2 ^ ((semitone - 3) / 12))
+end
+
+-- ================================================================
+-- CommonUI component -- owns all screen state, Fetch() builds the
+-- whole frame as a pixel table, OnEvent() handles key/key_up.
+-- ================================================================
 local w, h = term.getSize()
 local ui = CommonUI.New(term)
 
-local menuOptions = {
-    {name = "Command",   icon = ">_"},
-    {name = "Programs",  icon = "[]"},
-    {name = "Settings",  icon = "* "},
-    {name = "Shut Down", icon = "X "},
-    {name = "Uninstall", icon = "! "},
-}
+local Piano = CommonUI.EmptyControl()
+Piano.PosX, Piano.PosY = 1, 1
+Piano.SizeX, Piano.SizeY = w, h
+Piano.WantExit = false
+Piano.WantExport = false
 
-local boxWidth, boxHeight = 20, 2
-
--- ---- MenuList component ----
--- Owns selection state + header (ID/day/time) and draws both via Fetch().
-local MenuList = CommonUI.EmptyControl()
-MenuList.PosX, MenuList.PosY = 1, 1
-MenuList.SizeX, MenuList.SizeY = w, h
-MenuList.DrawPriority = 1
-MenuList.nOption = 1
-MenuList.buttonRegions = {}
-
-function MenuList:Fetch()
+function Piano:Fetch()
     local px = {}
     local function set(x, y, bg, fg, ch)
+        if x < 1 or x > w or y < 1 or y > h then return end
         px[x .. ";" .. y] = CommonUI.MakePixel(bg, fg, ch)
     end
     local function fillRow(y, x1, x2, bg, fg)
@@ -36,92 +108,331 @@ function MenuList:Fetch()
         for i = 1, #s do set(x + i - 1, y, bg, fg, s:sub(i, i)) end
     end
 
-    -- Clear whole screen to background
-    for y = 1, h do fillRow(y, 1, w, UI.background, UI.text) end
+    for y = 1, h do fillRow(y, 1, w, colors.gray, colors.white) end
 
-    -- Header bar
+    -- PunOS-style header (row 1 only -- rows are tight on a 51x19 term)
     fillRow(1, 1, w, UI.border, UI.text)
-    fillRow(2, 1, w, UI.border, UI.text)
-    fillRow(3, 1, w, UI.border, UI.text)
-    text(2, 2, "PunOS", UI.border, UI.primary)
+    text(2, 1, "PunOS  Piano Studio", UI.border, UI.primary)
     local info = "ID:" .. os.getComputerID()
-    text(w - #info - 1, 2, info, UI.border, UI.subtext)
-    local timeStr = "Day " .. os.day() .. " | " .. textutils.formatTime(os.time(), false)
-    text(2, 3, timeStr, UI.border, UI.subtext)
+    text(w - #info - 1, 1, info, UI.border, UI.subtext)
 
-    -- Title
-    local title = "MAIN MENU"
-    text(math.floor((w - #title) / 2), 5, title, UI.background, UI.primary)
+    local startX, whiteKeyWidth = 2, 4
+    local currentX = startX
 
-    -- Option boxes
-    local totalHeight = (#menuOptions * boxHeight) + ((#menuOptions - 1) * 1)
-    local startY = math.floor((h - totalHeight - 7) / 2) + 6
-    if startY + totalHeight > h - 2 then startY = 7 end
-
-    self.buttonRegions = {}
-    for i, option in ipairs(menuOptions) do
-        local y = startY + (i - 1) * (boxHeight + 1)
-        local x = math.floor((w - boxWidth) / 2)
-        self.buttonRegions[i] = {x1 = x, y1 = y, x2 = x + boxWidth - 1, y2 = y + boxHeight - 1}
-
-        local bg, fg
-        if i == self.nOption then bg, fg = UI.primary, UI.background
-        else bg, fg = UI.border, UI.text end
-
-        for yy = y, y + boxHeight - 1 do fillRow(yy, x, x + boxWidth - 1, bg, fg) end
-        local label = option.icon .. " " .. option.name
-        text(x + math.floor((boxWidth - #label) / 2), y + math.floor(boxHeight / 2), label, bg, fg)
+    -- White keys
+    for _, note in ipairs(base_notes) do
+        if not note.isBlack then
+            note.x1 = currentX
+            note.x2 = currentX + whiteKeyWidth - 1
+            local isActive = (heldNotes[note.key] ~= nil)
+            local bg = isActive and colors.lightGray or colors.white
+            for y = 3, 13 do fillRow(y, note.x1, note.x2, bg, colors.black) end
+            text(note.x1 + 1, 11, note.name, bg, colors.black)
+            text(note.x1 + 1, 12, "[" .. keys.getName(note.key):upper() .. "]", bg, colors.black)
+            currentX = currentX + whiteKeyWidth
+        end
     end
 
-    text(2, h, "W/S or Click: Select | Enter: Confirm", UI.background, UI.subtext)
-    return px
-end
-
-function MenuList:OnEvent(event, p1, p2, p3)
-    if event == "key" then
-        if p1 == keys.w or p1 == keys.up then
-            if self.nOption > 1 then self.nOption = self.nOption - 1; ui:DrawComponent(self.__ID__) end
-        elseif p1 == keys.s or p1 == keys.down then
-            if self.nOption < #menuOptions then self.nOption = self.nOption + 1; ui:DrawComponent(self.__ID__) end
-        elseif p1 == keys.enter then
-            self.Chosen = self.nOption
-        end
-    elseif event == "mouse_click" then
-        local mx, my = p2, p3
-        for i, r in ipairs(self.buttonRegions) do
-            if mx >= r.x1 and mx <= r.x2 and my >= r.y1 and my <= r.y2 then
-                self.nOption = i
-                ui:DrawComponent(self.__ID__)
-                self.Chosen = i
-                break
+    -- Black keys
+    for i, note in ipairs(base_notes) do
+        if note.isBlack then
+            local prevWhite = nil
+            for j = i - 1, 1, -1 do
+                if not base_notes[j].isBlack then prevWhite = base_notes[j]; break end
+            end
+            if prevWhite then
+                note.x1 = prevWhite.x2
+                note.x2 = prevWhite.x2 + 1
+                local isActive = (heldNotes[note.key] ~= nil)
+                local bg = isActive and colors.gray or colors.black
+                for y = 3, 8 do fillRow(y, note.x1, note.x2, bg, colors.white) end
+                text(note.x1, 7, note.name, bg, colors.white)
             end
         end
     end
+
+    -- Status bar
+    fillRow(14, 1, w, colors.black, colors.white)
+    local octLabel = "Octave: C" .. (4 + currentOctave) .. " [Up/Down]"
+    if currentOctave < -1 or currentOctave > 1 then
+        octLabel = octLabel .. " (live clamps)"
+    end
+    text(2, 14, octLabel, colors.black, colors.yellow)
+    text(2 + #octLabel + 1, 14, "Inst [1-6]: " .. instruments[selectedInstrumentIndex]:upper(), colors.black, colors.lime)
+
+    -- Chord list
+    local sideX = 35
+    text(sideX, 3, "CHORDS", colors.gray, colors.cyan)
+    local chords = {
+        "CM: A-D-H", "Cm: A-E-H", "DM: S-T-H", "Dm: S-F-H",
+        "EM: D-Y-J", "Em: D-G-J", "FM: F-H-K", "Fm: F-Y-K",
+        "GM: G-J-S", "Gm: G-U-S", "Am: H-K-D",
+    }
+    for i, line in ipairs(chords) do
+        text(sideX, 3 + i, line, colors.gray, colors.white)
+    end
+
+    -- Loop progress bar
+    fillRow(16, 1, w, colors.black, colors.white)
+    text(2, 16, "Loop: [", colors.black, colors.white)
+    local barX = 2 + 7
+    for t = 1, 16 do
+        local on = (t == math.floor(currentTick / 2))
+        set(barX + t - 1, 16, colors.black, on and colors.red or colors.gray, on and "=" or "-")
+    end
+    text(barX + 16, 16, "]", colors.black, colors.white)
+
+    -- Controls legend
+    fillRow(17, 1, w, colors.black, colors.white)
+    text(2, 17, "[R] Rec: " .. (isRecording and "ON " or "OFF"), colors.black, isRecording and colors.red or colors.lightGray)
+    text(18, 17, "[L] Loop: " .. (isLooping and "ON " or "OFF"), colors.black, isLooping and colors.lime or colors.lightGray)
+
+    fillRow(18, 1, w, colors.black, colors.white)
+    text(2, 18, "[C] Clear  [X] Export", colors.black, colors.yellow)
+    text(22, 18, "[Backspace] Exit", colors.black, colors.red)
+
+    return px
 end
 
--- ---- Run ----
-local menuId = ui:AddComponent(MenuList)
-ui:FocusComponent(menuId)
-ui:DrawComponent(menuId)
+function Piano:OnEvent(event, p1, p2)
+    if isExporting then return end
 
-local headerTimer = os.startTimer(1)
-while not MenuList.Chosen do
-    local event, p1, p2, p3 = os.pullEvent()
-    if event == "timer" and p1 == headerTimer then
-        ui:DrawComponent(menuId)   -- refresh clock/day
-        headerTimer = os.startTimer(1)
-    else
-        MenuList:OnEvent(event, p1, p2, p3)
+    if event == "key" then
+        local isRepeat = p2
+        if isRepeat then return end
+        local key = p1
+
+        if key == keys.backspace then
+            self.WantExit = true
+            return
+        elseif key == keys.up then
+            if currentOctave < OCTAVE_MAX then currentOctave = currentOctave + 1 end
+            ui:DrawComponent(self.__ID__); return
+        elseif key == keys.down then
+            if currentOctave > OCTAVE_MIN then currentOctave = currentOctave - 1 end
+            ui:DrawComponent(self.__ID__); return
+        elseif key >= keys.one and key <= keys.six then
+            selectedInstrumentIndex = (key - keys.one) + 1
+            ui:DrawComponent(self.__ID__); return
+        elseif key == keys.r then
+            isRecording = not isRecording
+            ui:DrawComponent(self.__ID__); return
+        elseif key == keys.l then
+            isLooping = not isLooping
+            ui:DrawComponent(self.__ID__); return
+        elseif key == keys.c then
+            tracks = {}
+            ui:DrawComponent(self.__ID__); return
+        elseif key == keys.x then
+            self.WantExport = true
+            return
+        end
+
+        local note = findNoteByKey(key)
+        if note then
+            heldNotes[key] = note
+            ui:DrawComponent(self.__ID__)
+        end
+
+    elseif event == "key_up" then
+        local key = p1
+        if heldNotes[key] then
+            heldNotes[key] = nil
+            ui:DrawComponent(self.__ID__)
+        end
     end
 end
 
-term.setBackgroundColor(colors.black)
-term.clear()
+-- ================================================================
+-- Export -- drops out of CommonUI's pixel drawing for the blocking
+-- filename prompt/progress text, same as the plain-term prompts the
+-- rest of PunOS uses for this kind of one-off input.
+-- ================================================================
+local function exportDFPWM()
+    isExporting = true
 
-local nOption = MenuList.Chosen
-if     nOption == 1 then shell.run("os/.command")
-elseif nOption == 2 then shell.run("os/.programs")
-elseif nOption == 3 then shell.run("os/.settings")
-elseif nOption == 4 then os.shutdown()
-else                     shell.run("os/.UninstallDialog")
+    if not fs.exists(AUDIO_DIR) then fs.makeDir(AUDIO_DIR) end
+
+    term.setBackgroundColor(colors.black)
+    term.setCursorPos(1, 19); term.clearLine()
+    term.setCursorPos(2, 19)
+    term.setTextColor(colors.yellow)
+    term.write("Enter filename: ")
+    term.setTextColor(colors.white)
+
+    term.setCursorBlink(true)
+    local filename = read()
+    term.setCursorBlink(false)
+
+    if not filename or filename == "" then filename = "my_loop" end
+    -- sanitize: no path separators, no dotdot -- always lands in /audio
+    filename = filename:gsub("[/\\]", "_"):gsub("%.%.", "_")
+    if not filename:match("%.dfpwm$") then filename = filename .. ".dfpwm" end
+    local filepath = AUDIO_DIR .. "/" .. filename
+
+    term.setCursorPos(1, 19); term.clearLine()
+    term.setCursorPos(2, 19)
+    term.setTextColor(colors.yellow)
+    term.write("Synthesizing clean DFPWM audio... Please wait.")
+
+    local sampleRate = 48000
+    local tickDuration = 0.1
+    local totalSamples = math.floor(LOOP_LENGTH * tickDuration * sampleRate)
+    local pcmBuffer = {}
+    for i = 1, totalSamples do pcmBuffer[i] = 0 end
+
+    -- 1. Render smooth, anti-aliased tones into 48kHz PCM buffer
+    for tick, noteList in pairs(tracks) do
+        local startSample = math.floor((tick - 1) * tickDuration * sampleRate) + 1
+        local noteSamples = math.floor(0.35 * sampleRate) -- 350ms note decay
+
+        for _, item in ipairs(noteList) do
+            local freq = pitchToFreq(item.pitch)  -- true, unclamped semitone
+
+            for s = 0, noteSamples - 1 do
+                local idx = startSample + s
+                if idx <= totalSamples then
+                    local t = s / sampleRate
+
+                    local attack = math.min(1, s / 200)
+                    local decay = math.exp(-t * 8)
+                    local env = attack * decay
+
+                    local wave = math.sin(2 * math.pi * freq * t) * 0.6
+                    wave = wave + math.sin(4 * math.pi * freq * t) * 0.2
+                    wave = wave + math.sin(6 * math.pi * freq * t) * 0.1
+
+                    local sampleValue = wave * env * 45
+                    pcmBuffer[idx] = pcmBuffer[idx] + sampleValue
+                end
+            end
+        end
+    end
+
+    -- 2a. Single-pole low-pass to tame the fast transients that cause
+    --     DFPWM predictor static. alpha=0.6 -> ~7kHz cutoff -- high enough
+    --     to keep the upper notes audible now that export pitch isn't
+    --     clamped to the note-block range (a lower alpha here would quietly
+    --     muffle exactly the notes the octave fix was meant to expose).
+    local smoothed = {}
+    local lastSample = 0
+    local alpha = 0.6
+    for i = 1, totalSamples do
+        lastSample = lastSample + alpha * (pcmBuffer[i] - lastSample)
+        smoothed[i] = lastSample
+    end
+
+    -- 2b. Soft-knee limiter as the final stage. Transparent below the knee;
+    --     above it, saturates gently toward the 8-bit ceiling instead of
+    --     hard-clipping. A hard clip (the old behavior) reintroduces the
+    --     same kind of sharp step this whole pass exists to remove, so it
+    --     was fighting itself on loud chords.
+    local filteredBuffer = {}
+    local KNEE, CEILING = 100, 127
+    for i = 1, totalSamples do
+        local x = smoothed[i]
+        local ax = math.abs(x)
+        if ax <= KNEE then
+            filteredBuffer[i] = math.floor(x)
+        else
+            local shaped = KNEE + (CEILING - KNEE) * math.tanh((ax - KNEE) / (CEILING - KNEE))
+            filteredBuffer[i] = math.floor(x >= 0 and shaped or -shaped)
+        end
+    end
+
+    -- 3. Encode & write into /audio so File Share / Audio Player see it
+    local encoder = dfpwm.make_encoder()
+    local dfpwmBytes = encoder(filteredBuffer)
+
+    local file = fs.open(filepath, "wb")
+    file.write(dfpwmBytes)
+    file.close()
+
+    term.setCursorPos(1, 19); term.clearLine()
+    term.setCursorPos(2, 19)
+    term.setTextColor(colors.lime)
+    term.write("Saved to '" .. filepath .. "'!")
+    sleep(1.5)
+
+    isExporting = false
+    ui:DrawComponent(Piano.__ID__)
 end
+
+local function cleanExit()
+    term.setBackgroundColor(colors.black)
+    term.setTextColor(colors.white)
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("Exited Piano Studio.")
+end
+
+-- ================================================================
+-- Loops
+-- ================================================================
+local function soundLoop()
+    while true do
+        if not isExporting then
+            local activeInst = instruments[selectedInstrumentIndex]
+
+            for key, note in pairs(heldNotes) do
+                local lp = livePitch(note.offset)
+                speaker.playNote(activeInst, 3.0, lp)
+
+                if isRecording then
+                    local ep = exportSemitone(note.offset)
+                    tracks[currentTick] = tracks[currentTick] or {}
+                    local exists = false
+                    for _, existing in ipairs(tracks[currentTick]) do
+                        if existing.pitch == ep and existing.inst == activeInst then
+                            exists = true; break
+                        end
+                    end
+                    if not exists then
+                        table.insert(tracks[currentTick], { inst = activeInst, pitch = ep })
+                    end
+                end
+            end
+
+            if isLooping and tracks[currentTick] then
+                for _, item in ipairs(tracks[currentTick]) do
+                    -- clamp only for the live speaker; export pitch (item.pitch) is untouched
+                    local lp = item.pitch
+                    if lp < 0 then lp = 0 elseif lp > 24 then lp = 24 end
+                    speaker.playNote(item.inst, 2.5, lp)
+                end
+            end
+
+            if isLooping or isRecording then
+                currentTick = (currentTick % LOOP_LENGTH) + 1
+                ui:DrawComponent(Piano.__ID__)
+            end
+        end
+        sleep(0.1)
+    end
+end
+
+local function eventLoop()
+    ui:DrawComponent(Piano.__ID__)
+    while true do
+        local event, p1, p2 = os.pullEvent()
+        if event == "key" then
+            Piano:OnEvent("key", p1, p2)
+        elseif event == "key_up" then
+            Piano:OnEvent("key_up", p1)
+        end
+
+        if Piano.WantExit then
+            cleanExit()
+            error()
+        elseif Piano.WantExport then
+            Piano.WantExport = false
+            exportDFPWM()
+        end
+    end
+end
+
+ui:AddComponent(Piano)
+
+pcall(function()
+    parallel.waitForAny(eventLoop, soundLoop)
+end)
